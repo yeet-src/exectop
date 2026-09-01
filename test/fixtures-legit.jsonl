@@ -1,0 +1,10 @@
+{"comm":"bash","argv":["bash","/tmp/adv/legit.sh"],"d":0}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h1"],"d":1}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h2"],"d":1}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h3"],"d":1}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h4"],"d":1}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h5"],"d":1}
+{"comm":"curl","argv":["curl","-fsS","file:///etc/hostname","-o","/tmp/adv/h6"],"d":1}
+{"comm":"tar","argv":["tar","-cf","/tmp/adv/a.tar","/etc/hostname"],"d":1}
+{"comm":"tar","argv":["tar","-tf","/tmp/adv/a.tar"],"d":1}
+{"comm":"chmod","argv":["chmod","644","/tmp/adv/a.tar"],"d":1}

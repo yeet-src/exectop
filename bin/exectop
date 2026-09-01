@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# execsnoop launcher — the `--` form.
+#
+#   execsnoop -- npm install        # launch and watch, tree complete from byte 0
+#   execsnoop --container my-app    # attach to a running container
+#   execsnoop --pid 4242            # attach to a pid subtree
+#
+# Launch mode exists here, in the shell, rather than in the script: a yeet
+# isolate has no way to spawn a process (no yeet.spawn, no child_process — the
+# sandbox deliberately doesn't reach the host that way). So the wrapper starts
+# the target STOPPED, hands its pid to the script, waits for the probe to
+# attach, then lets it run. That ordering is the whole point of launch mode:
+# there is no window in which the target can fork unobserved.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+YEET="${YEET:-yeet}"
+
+# Split our flags from the target command at `--`.
+ARGS=()
+CMD=()
+seen_sep=0
+for a in "$@"; do
+  if [[ $seen_sep == 0 && "$a" == "--" ]]; then seen_sep=1; continue; fi
+  if [[ $seen_sep == 1 ]]; then CMD+=("$a"); else ARGS+=("$a"); fi
+done
+
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  # Attach mode: no target command, just pass the flags through.
+  exec sudo "$YEET" run -t "$HERE" -- "${ARGS[@]+"${ARGS[@]}"}"
+fi
+
+# Launch mode. Start the target with SIGSTOP raised before it execs, so it is
+# parked at the very beginning of its own life.
+#
+# The target's own output is redirected to a log rather than the terminal: it
+# shares the TUI's screen otherwise, and a chatty build (npm's progress spinner)
+# scribbles over the panels. The log path is printed on exit.
+LOG="${EXECSNOOP_LOG:-$(mktemp -t execsnoop-target.XXXXXX.log)}"
+setsid bash -c 'kill -STOP $$; exec "$@"' _ "${CMD[@]}" >"$LOG" 2>&1 </dev/null &
+TARGET=$!
+cleanup() {
+  kill -CONT "$TARGET" 2>/dev/null || true
+  kill -TERM "$TARGET" 2>/dev/null || true
+  printf '\n[execsnoop] target output: %s\n' "$LOG" >&2
+}
+trap cleanup EXIT INT TERM
+
+# Wait until it is actually stopped, so we know it hasn't run anything yet.
+for _ in $(seq 1 100); do
+  state=$(ps -o state= -p "$TARGET" 2>/dev/null | tr -d ' ' || true)
+  [[ "$state" == T* ]] && break
+  sleep 0.05
+done
+
+# Hand the parked pid to the TUI, and let the target go once the probe is up.
+( sleep 2; kill -CONT "$TARGET" 2>/dev/null || true ) &
+exec sudo "$YEET" run -t "$HERE" -- --pid "$TARGET" --launched "${ARGS[@]+"${ARGS[@]}"}"
