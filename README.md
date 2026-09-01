@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/exectop.gif" width="820" alt="exectop watching a build: hundreds of execs folded into a handful of rows, with four unusual commands ranked above them">
+  <img src="assets/exectop.gif" width="820" alt="exectop watching a build under launch mode: 425 execs folded into rows led by echo x124 and date x90, with four flagged commands above them (curl, base64 -d, a read of ~/.ssh, and chmod)">
 </p>
 
 **`exectop` is a scoped process-launch monitor for Linux: it shows every program one application starts, folds the repetition into one row per kind, and ranks anything that doesn't look like ordinary work above the rest.**
@@ -134,16 +134,20 @@ Reach for this one when the question is "what did this application launch", espe
 
 ## What you're looking at
 
+<p align="center">
+  <img src="assets/exectop-detail.gif" width="820" alt="Moving the cursor through the folded tree while the findings panel fills in: three flagged commands mid-run, then a fourth as the build finishes">
+</p>
+
 ```
- ● exectop   ▏  scope launched pid 1111222  ▏  complete tree — target was parked until the probe attached
-  541 execs in 52s · 8.2/s   ▁▁▁▁▁█▂▁▁▁▅▄▄█▄█▄█▄▄█▄█▄▄█▄█▄▄█▄▁▁▁▁
-  mostly text plumbing (77% of execs) · 4 things that don't fit
+ ● exectop   ▏  scope launched pid 2211910  ▏  complete tree — target was parked until the probe attached
+  425 execs in 42s · 7.6/s   ▁▁▂▅█▄▂▁▁▃▆█▅▃▁▁▂▄▇█▆▃▁▁▂▅█▄▂▁▁▁▁▁▁
+  mostly text plumbing (76% of execs) · 4 things that don't fit
 ── doing ────────────────────────────────────────────────────────────────────
-  text plumbing    ███████████████████████·······    416  76.9%
-  compiling        █████·························     84  15.5%
-  other            ██····························     30   5.5%
-  moving files     ······························      8   1.5%
-  network          ······························      2   0.4%
+  text plumbing    ███████████████████████·······    323  76.0%
+  compiling        ██████························     84  19.8%
+  moving files     ······························      8   1.9%
+  other            ······························      7   1.6%
+  network          ······························      2   0.5%
   shelling out     ······························      1   0.2%
 ── doesn't fit ──────────────────────────────────────────────────────────────
   ▲ curl -fsS -o ⟨2 args⟩              ran once, fetches from the network
@@ -152,9 +156,12 @@ Reach for this one when the question is "what did this application launch", espe
   ▲ chmod ⟨2 args⟩                     ran once, widens permissions
 ── every exec, repetition folded ▸ ──────────────────────────────────────────
     command                              count   share          fork→exec  parent
-  ▸ echo ⟨1 arg⟩                          ×147  ██······  27.2%     174µs  bash
-  ▸ date ⟨1 arg⟩                           ×90  █·······  16.7%     166µs  bash
-  ▸ as -EL -mabi=lp64 -o ⟨2 args⟩          ×27  ········   5.2%     122µs  gcc
+  ▸ echo ⟨1 arg⟩                          ×124  ██······  29.2%     149µs  bash
+  ▸ date ⟨1 arg⟩                           ×90  █·······  21.2%     137µs  bash
+  ▸ sleep ⟨1 arg⟩                          ×46  █·······  10.8%     145µs  bash
+  ▸ as -EL -mabi=lp64 -o ⟨2 args⟩          ×27  ········   6.4%     128µs  gcc
+  ▸ gcc -Wall -O2 -c -o ⟨2 args⟩           ×26  ········   6.1%     243µs  bash
+  ▸ cc1 -quiet -imultiarch -quiet …        ×26  ········   6.1%     103µs  gcc,?
 ```
 
 The screen reads top to bottom, general to specific. The **status bar** names what you're scoped to and what that scope can promise. The **verdict** is two lines: totals with a rate sparkline, then the dominant kind of work and whether anything looks out of place. **doing** groups every exec into behavior buckets, which is the fastest way to see that a build is mostly compiling or mostly shell. **doesn't fit** ranks the unusual. **every exec, repetition folded** is the full picture, one row per kind of command.
