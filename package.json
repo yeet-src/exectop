@@ -1,0 +1,8 @@
+{
+  "name": "exectop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "exectop — a yeet script.",
+  "dependencies": {}
+}
