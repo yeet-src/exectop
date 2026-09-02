@@ -13,6 +13,7 @@ import { HashMap, RingBuf } from "yeet:bpf";
 import { control } from "./probe.js";
 import { normalize } from "../lib/argv.js";
 import { createModel } from "../lib/model.js";
+import { descendantsOf, procTable } from "../lib/scope.js";
 
 const traced = new HashMap(control, "traced");
 const events = new RingBuf(control, "events");
@@ -28,7 +29,12 @@ const model = createModel();
 const raw = [];
 
 await traced.update({ tgid: root }, { depth: 0 });
-console.log(`[capture] root=${root} for ${secs}s`);
+// Seed the descendants that already exist, exactly as main.jsx does. Without
+// this the capture only sees processes forked after we attach, so a root whose
+// children (or whose threads) predate us reports a fraction of its tree.
+const existing = descendantsOf(await procTable(), root);
+for (const r of existing) await traced.update({ tgid: r.pid }, { depth: r.depth });
+console.log(`[capture] root=${root} for ${secs}s (+${existing.length} existing)`);
 
 const sub = await events.subscribe((w) => {
   const e = normalize(w);

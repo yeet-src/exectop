@@ -38,6 +38,24 @@ export async function seedRoot(pid, comm) {
   model.seed(pid, comm ?? String(pid));
 }
 
+// Seed processes that ALREADY exist, so a scope isn't limited to what forks
+// after we attach. Rows are {pid, comm, depth} from lib/scope.js. Membership
+// spreads forward from each of them exactly as it does from the root.
+export async function seedExisting(rows) {
+  let n = 0;
+  for (const r of rows) {
+    try {
+      await traced.update({ tgid: r.pid }, { depth: r.depth });
+      if (r.comm) model.seed(r.pid, r.comm);
+      n++;
+    } catch {
+      // The map is capacity-bounded; a full map should cost us this one process
+      // rather than the whole seed, so keep going and report what landed.
+    }
+  }
+  return n;
+}
+
 // Narrow to a cgroup (0 = the pid subtree alone, no cgroup filter).
 export async function setCgroup(cgid) {
   await bss.patch({ target_cgid: cgid });
