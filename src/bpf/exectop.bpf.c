@@ -112,7 +112,16 @@ static __always_inline int in_scope(__u32 tgid, __u32 *depth_out)
 SEC("tracepoint/sched/sched_process_fork")
 int on_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
-	__u32 parent = (__u32)ctx->parent_pid;
+	// The parent key is its TGID, not ctx->parent_pid. The tracepoint reports
+	// *tids*, but `traced` is keyed by tgid on the read path (in_scope uses
+	// pid_tgid >> 32), so looking the parent up by tid only matched when the
+	// forking thread happened to be created after we seeded — a thread that
+	// already existed at attach was never in the map, and every process it
+	// spawned, and that subtree's entire exec stream, was invisible. The fork
+	// tracepoint runs in the parent's context, so pid_tgid gives us the tgid.
+	// (Thread creations still insert a tid-keyed entry here. It is never read,
+	// since lookups are by tgid, and it is dropped at that thread's exit.)
+	__u32 parent = (__u32)(bpf_get_current_pid_tgid() >> 32);
 	__u32 child = (__u32)ctx->child_pid;
 
 	struct traced_key pk = { .tgid = parent };

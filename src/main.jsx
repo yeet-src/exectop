@@ -19,9 +19,9 @@
  */
 import { Box, Text, computed, mount, signal } from "yeet:tui";
 import {
-  buckets, flashes, folds, idle, outliers, paused, seedRoot, setCgroup, setPaused, stats, status, tick,
+  buckets, flashes, folds, idle, outliers, paused, seedExisting, seedRoot, setCgroup, setPaused, stats, status, tick,
 } from "@/probes/exec.js";
-import { commOf, containerRoot, listContainers } from "@/lib/scope.js";
+import { commOf, containerRoot, descendantsOf, listContainers, procTable } from "@/lib/scope.js";
 import { C_FAINT, C_DIM } from "@/lib/format.js";
 import TitleBar from "@/components/titlebar.jsx";
 import Verdict from "@/components/verdict.jsx";
@@ -51,8 +51,11 @@ async function resolveScope() {
       );
     }
     await seedRoot(c.pid, c.comm);
+    // The container is already running, so its tree already exists — seed it
+    // rather than waiting for each process to fork again.
+    const existing = await seedExisting(descendantsOf(await procTable(), c.pid));
     scope.set(`container ${c.label}`);
-    status.set(c.cgroup ? "cgroup-scoped" : "pid-subtree");
+    status.set(`pid-subtree — ${existing} existing process${existing === 1 ? "" : "es"} seeded`);
     return;
   }
   if (pid) {
@@ -64,17 +67,24 @@ async function resolveScope() {
       status.set("complete tree — target was parked until the probe attached");
     } else {
       scope.set(`pid ${pid}`);
-      // Anything this pid forked before we attached is invisible until it
-      // forks again — say so rather than implying the tree is complete.
-      status.set("pid-subtree (pre-existing children not tracked)");
+      // Children that already existed are seeded from the process table, so
+      // the tree is complete as of attach — what we cannot see is only what
+      // exited before we got here.
+      const existing = await seedExisting(descendantsOf(await procTable(), pid));
+      status.set(`pid-subtree — ${existing} existing child${existing === 1 ? "" : "ren"} seeded`);
     }
     return;
   }
-  // No scope given: seed pid 1 so fork propagation covers the host. Honest
-  // about being unscoped rather than pretending to be targeted.
+  // No scope given: seed EVERY live process. Seeding pid 1 alone was not
+  // "whole host" — membership only spreads forward through fork, so it caught
+  // just the processes whose whole chain postdated attach. A login shell
+  // predates that, which meant nothing typed into a terminal ever appeared.
   await seedRoot(1, "systemd");
+  const n = await seedExisting(
+    (await procTable()).filter((s) => s.pid !== 1).map((s) => ({ ...s, depth: 0 })),
+  );
   scope.set("whole host");
-  status.set("unscoped — pass --container or --pid to narrow");
+  status.set(`unscoped — ${n} live processes seeded; pass --container or --pid to narrow`);
 }
 
 await resolveScope();
