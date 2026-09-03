@@ -2,9 +2,9 @@
 // before you read anything else — the total, the rate, a sparkline, the
 // dominant behavior, and whether anything looks out of place.
 import { Box, Text } from "yeet:tui";
-import { C_BAD, C_DIM, C_FAINT, C_OK, C_TITLE, BUCKET, fmtAge, fmtCount, fmtRate, pad, sparkline } from "@/lib/format.js";
+import { C_BAD, C_DIM, C_FAINT, C_OK, C_TITLE, C_WARN, BUCKET, fmtAge, fmtCount, fmtRate, pad, sparkline } from "@/lib/format.js";
 
-export default ({ tick, stats, buckets, outliers, idle, width: W }) => (
+export default ({ tick, stats, buckets, outliers, idle, dropped, width: W }) => (
   <Box direction="column" height="2">
     <Text height="1" break="none">
       {() => {
@@ -58,6 +58,13 @@ export default ({ tick, stats, buckets, outliers, idle, width: W }) => (
         // a rate on screen that hasn't been true for minutes.
         if (quiet != null && quiet > 10) {
           runs.push(<Text fg={C_DIM}>{`  ·  quiet for ${fmtAge(quiet)}`}</Text>);
+        }
+        // A dropped exec means the counts below are a floor, not a total. Say
+        // so where the totals are, rather than letting a burst quietly
+        // truncate the picture.
+        const lost = dropped?.() ?? 0;
+        if (lost > 0) {
+          runs.push(<Text bold fg={C_WARN}>{`  ·  ${fmtCount(lost)} dropped`}</Text>);
         }
         // Clear the rest of the line (see above — no erase-in-line exists).
         const used = runs.reduce((n, r) => n + String(r?.props?.children ?? "").length, 0);

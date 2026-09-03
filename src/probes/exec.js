@@ -2,7 +2,7 @@
 // ring buffer once, feeds the pure aggregation in lib/model.js, and exposes
 // what the UI reads. The only BPF-aware module besides probe.js.
 import { signal } from "yeet:tui";
-import { DataSec, HashMap, RingBuf } from "yeet:bpf";
+import { ArrayMap, DataSec, HashMap, RingBuf } from "yeet:bpf";
 import { control } from "./probe.js";
 import { normalize } from "../lib/argv.js";
 import { createModel, foldKey } from "../lib/model.js";
@@ -10,6 +10,18 @@ import { createModel, foldKey } from "../lib/model.js";
 const events = new RingBuf(control, "events");
 const traced = new HashMap(control, "traced");
 const bss = new DataSec(control, "probe.bss");
+const statsMap = new ArrayMap(control, "stats_map");
+
+// How many execs the kernel emitted vs dropped. A drop means the ring buffer
+// filled faster than userspace drained it, so the numbers on screen are a
+// floor rather than a count. Polled rather than streamed: it only needs to be
+// right when it is read.
+// A SIGNAL, not a plain variable. The verdict line reads this inside a thunk,
+// and a thunk only re-renders when a signal it read changes — a plain
+// function returning a mutated local never triggers a repaint, so the warning
+// was computed correctly and never drawn.
+export const droppedCount = signal(0);
+export const dropped = () => droppedCount.get();
 
 const model = createModel();
 
@@ -56,10 +68,11 @@ export async function seedExisting(rows) {
   return n;
 }
 
-// Narrow to a cgroup (0 = the pid subtree alone, no cgroup filter).
-export async function setCgroup(cgid) {
-  await bss.patch({ target_cgid: cgid });
-}
+// Note: there is deliberately no cgroup narrowing. An earlier design set a
+// target_cgid in .bss and filtered on it in-kernel, but nothing ever called it,
+// so container mode was always a plain pid subtree. Now that the existing tree
+// is seeded from the process graph, the tgid set IS the scope, and a second
+// overlapping filter would only add a way for the two to disagree.
 
 // One subscription, driving one model.
 //
@@ -105,6 +118,15 @@ await events.subscribe((w) => {
 // per event would spend the budget on work the eye cannot see. The flash decay
 // also needs a heartbeat, so tick advances even when the stream is briefly
 // quiet but flashes are still fading.
+// Poll the kernel counters once a second. Cheap, and only used to warn.
+setInterval(async () => {
+  try {
+    const c = await statsMap.lookup(0);
+    const n = Number(c?.dropped ?? 0);
+    if (n !== droppedCount.get()) droppedCount.set(n);
+  } catch { /* counters are advisory; never break the UI over them */ }
+}, 1000);
+
 setInterval(() => {
   const fading = flashes.size > 0;
   // Tick at least once a second even with nothing arriving, so the idle line
