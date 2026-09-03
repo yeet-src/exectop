@@ -9,7 +9,7 @@
 //
 // It also writes the raw normalized stream to /tmp/exectop-capture.json so a
 // run can be replayed against changed heuristics without re-running the load.
-import { HashMap, RingBuf } from "yeet:bpf";
+import { ArrayMap, HashMap, RingBuf } from "yeet:bpf";
 import { control } from "./probe.js";
 import { normalize } from "../lib/argv.js";
 import { createModel } from "../lib/model.js";
@@ -17,6 +17,18 @@ import { descendantsOf, procTable } from "../lib/scope.js";
 
 const traced = new HashMap(control, "traced");
 const events = new RingBuf(control, "events");
+const statsMap = new ArrayMap(control, "stats_map");
+
+// Kernel-side drop count. A non-zero value means the ring filled faster than
+// it drained, so every number in the report is a floor rather than a total.
+const dropped = async () => {
+  try {
+    const c = await statsMap.lookup(0);
+    return Number(c?.dropped ?? 0);
+  } catch {
+    return 0;
+  }
+};
 
 const root = Number(yeet.args?._?.[0] ?? 0);
 const secs = Number(yeet.args?._?.[1] ?? 30);
@@ -42,14 +54,16 @@ const sub = await events.subscribe((w) => {
   model.add(e);
 });
 
-setTimeout(() => {
-  report();
+setTimeout(async () => {
+  await report();
   yeet.exit();
 }, secs * 1000);
 
-function report() {
+async function report() {
   const total = model.total;
-  console.log(`\n=== ${total} execs in ${model.elapsed.toFixed(0)}s (${model.rate().toFixed(1)}/s) ===\n`);
+  const lost = await dropped();
+  console.log(`\n=== ${total} execs in ${model.elapsed.toFixed(0)}s (${model.rate().toFixed(1)}/s)${lost ? ` — ${lost} DROPPED` : ""} ===\n`);
+  if (lost) console.log(`[warn] ${lost} execs were dropped: the ring buffer filled faster than it drained, so every count below is a floor.\n`);
 
   console.log("-- doing --");
   for (const b of model.buckets()) {

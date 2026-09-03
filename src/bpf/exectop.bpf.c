@@ -46,9 +46,15 @@ struct exec_event {
 	__u8  args[ARGV_BUF];
 };
 
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 22); // 4 MiB — exec storms are bursty
+	// 32 MiB. A record is ~1 KiB (the argv window dominates), so 4 MiB held
+	// only ~4000 events and a parallel fork storm outran it in under a second:
+	// measured 7k of 36k execs arriving, the rest dropped silently. This is
+	// the cheapest lever, and the drop counter above reports what still slips
+	// through rather than letting a burst quietly truncate the picture.
+	__uint(max_entries, 1 << 25);
 } events SEC(".maps");
 
 // The traced set: tgid -> depth below the root. Seeded from userspace with the
@@ -82,6 +88,23 @@ struct {
 	__type(value, __u64);
 } fork_ts SEC(".maps");
 
+// Event counters, read by JS. `emitted` and `dropped` are the two numbers that
+// matter: a burst that outruns the ring buffer loses execs, and losing them
+// silently is worse than the loss. Measured on a 12-way fork storm, 36k execs
+// in a few seconds, only ~7k arrived — 80% gone with nothing on screen to say
+// so. The UI now shows a dropped count when it is non-zero.
+struct counters {
+	__u64 emitted;
+	__u64 dropped;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct counters);
+} stats_map SEC(".maps");
+
 // Set from JS before the subscription opens (probe.bss). When non-zero, only
 // tasks in this cgroup are eligible — the cgroup is the scope and `traced`
 // narrows it to the actual subtree. When zero, `traced` alone decides.
@@ -102,6 +125,9 @@ static __always_inline int in_scope(__u32 tgid, __u32 *depth_out)
 	struct traced_val *d = bpf_map_lookup_elem(&traced, &k);
 	if (!d)
 		return 0;
+	// target_cgid is inert: the traced tgid set is the scope, seeded from the
+	// process graph and grown at fork. Kept as a knob for a future
+	// cgroup-only mode, and it reads as 0 unless something patches it.
 	if (target_cgid && bpf_get_current_cgroup_id() != target_cgid)
 		return 0;
 	*depth_out = d->depth;
@@ -198,6 +224,22 @@ int on_exec(struct trace_event_raw_sched_process_exec *ctx)
 		e->args_len = (n == 0) ? (__u32)len : 0;
 	}
 
-	bpf_ringbuf_output(&events, e, sizeof(*e), 0);
+	// A variable-length emit (HDR_BYTES + args_len) was tried here to raise
+	// throughput, since the ring is bound by bytes moved and the median argv
+	// blob is only 48 bytes against a 1024-byte field. It does not work: the
+	// ring buffer is bound on the JS side with `btf_struct: "exec_event"`, so
+	// the consumer decodes fixed-size records and a short write delivers
+	// nothing at all (measured: 0 events received). Raising the ceiling would
+	// mean a smaller ARGV_BUF, which truncates 12% of real records, or a
+	// second smaller event type. Left as a documented limit instead: the
+	// drop counter reports what is lost rather than hiding it.
+	long sent = bpf_ringbuf_output(&events, e, sizeof(*e), 0);
+	struct counters *c = bpf_map_lookup_elem(&stats_map, &zero);
+	if (c) {
+		if (sent < 0)
+			__sync_fetch_and_add(&c->dropped, 1);
+		else
+			__sync_fetch_and_add(&c->emitted, 1);
+	}
 	return 0;
 }

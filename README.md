@@ -290,11 +290,15 @@ A BPF program that loads on your laptop can be rejected by an older kernel's ver
 
 `make veristat` loads every program through the verifier on your own kernel and reports per-program complexity. [`.github/workflows/kernel-matrix.yml`](.github/workflows/kernel-matrix.yml) builds the object and boots each kernel in its matrix in a VM, failing if any verifier rejects it. Run the same matrix locally on Linux with KVM using `make veristat-matrix`.
 
-The aggregation has its own suite, which needs no kernel:
+Three suites, split by what they can reach:
 
 ```sh
-node test/heuristics.test.mjs
+node test/heuristics.test.mjs   # folding + outlier scoring — no kernel needed
+bash test/capture.sh            # the kernel seam: seeding, fork propagation, threads
+bash test/drops.sh              # ring-buffer drop accounting under a fork storm
 ```
+
+The first replays recorded captures through `lib/model.js`, so it runs anywhere node does. The other two need a Linux box with the probe built, because they exercise the path from kernel to traced set to ring buffer, which is where two whole-subtree bugs lived: a scope that only ever spread forward through `fork`, so anything already running was invisible, and a parent lookup keyed by tid against a map keyed by tgid, which silently dropped every process spawned by a pre-existing thread. Neither was reachable from a fixture replay.
 
 It runs the folding and the outlier scoring against five recorded captures in `test/` and asserts both halves of the claim: three benign builds produce no findings, and the adversarial ones produce the expected findings. The captures are real probe output rather than synthesized fixtures, deliberately: an earlier synthetic version of this suite passed while the heuristics were badly wrong.
 
@@ -325,6 +329,7 @@ Container mode additionally needs Docker reachable from the host running the pro
 > `exectop` is observability, not enforcement. It tells you what was launched; it does not stop, delay, or modify anything. For a kernel-enforced boundary around what a process can touch, [`agent-lock`](https://github.com/yeet-src/agent-lock) is the sibling that blocks rather than reports.
 
 - **Anything that doesn't exec.** A dependency that does its damage inside Node, Python, or the JVM without launching a program is invisible here. Fetching a URL with `fetch()` looks like nothing; fetching it with `curl` is a row. This is the boundary that matters most when reasoning about what the findings panel can and cannot catch.
+- **Execs beyond about 2,700 a second.** Delivery from the kernel is bound by bytes moved rather than events, and a record carries a 1 KiB argument window, so a parallel fork storm outruns the ring buffer. Measured: 96,000 execs fired across 24 workers, 36,000 captured and 60,000 dropped. The count is not lost, it is reported: the verdict line shows `59,431 dropped` and the headless report says the numbers below it are a floor. Normal builds are nowhere near this (a real `npm install` is tens per second), but a `make -j24` can reach it.
 - **Arguments past 1 KiB.** The kernel copies a fixed 1024-byte window of the argument blob and marks the record truncated. A very long compiler invocation is cut off; the program, its flags and the timing stay correct.
 - **Children that already existed** when you attach with `--pid` or `--container`. Membership propagates at `fork`, so a process that forked before you attached is outside the set until it forks again. Launch mode has no such gap, which is the reason to prefer it.
 - **Which files a process touched, or what it sent.** This is process launches only. For file access see [`agent-lock`](https://github.com/yeet-src/agent-lock), for HTTP see [`container-traffic`](https://github.com/yeet-src/container-traffic), for raw packets [`pktscope`](https://github.com/yeet-src/pktscope).

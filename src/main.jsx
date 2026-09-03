@@ -19,7 +19,7 @@
  */
 import { Box, Text, computed, mount, signal } from "yeet:tui";
 import {
-  buckets, flashes, folds, idle, outliers, paused, seedExisting, seedRoot, setCgroup, setPaused, stats, status, tick,
+  buckets, dropped, flashes, folds, idle, outliers, paused, seedExisting, seedRoot, setPaused, stats, status, tick,
 } from "@/probes/exec.js";
 import { commOf, containerRoot, descendantsOf, listContainers, procTable } from "@/lib/scope.js";
 import { C_FAINT, C_DIM } from "@/lib/format.js";
@@ -211,7 +211,7 @@ const Root = (size) => {
   return (
     <Box>
       <TitleBar scope={scope} status={status} paused={paused} />
-      <Verdict tick={tick} stats={stats} buckets={buckets} outliers={outliers} idle={idle} width={width} />
+      <Verdict tick={tick} stats={stats} buckets={buckets} outliers={outliers} idle={idle} dropped={dropped} width={width} />
       <Rule label="doing" width={width} />
       <Buckets tick={tick} stats={stats} buckets={buckets} width={width} maxRows={6} />
       <Rule label="doesn't fit" width={width} focused={outFocused} />
