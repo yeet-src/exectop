@@ -188,4 +188,5 @@ export const buckets = () => model.buckets();
 export const outliers = () => model.outliers();
 export const folds = () => model.folds();
 export const verdicts = () => model.verdicts();
+export const attempts = () => model.attempts();
 export const sandboxDetected = () => model.sandboxDetected();

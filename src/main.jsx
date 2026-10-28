@@ -19,7 +19,7 @@
  */
 import { Box, Text, computed, mount, signal } from "yeet:tui";
 import {
-  buckets, dropped, flashes, folds, idle, outliers, paused, sandboxDetected, seedExisting, seedRoot, setPaused, stats, status, tick, verdicts,
+  attempts, buckets, dropped, flashes, folds, idle, outliers, paused, sandboxDetected, seedExisting, seedRoot, setPaused, stats, status, tick, verdicts,
 } from "@/probes/exec.js";
 import { commOf, containerRoot, descendantsOf, listContainers, procTable } from "@/lib/scope.js";
 import { C_FAINT, C_DIM } from "@/lib/format.js";
@@ -276,7 +276,7 @@ const Root = (size) => {
       <Box height="1fr" overflow="hidden">
         {() => (view.get() === "sandbox"
           ? (
-            <Sandbox tick={tick} verdicts={verdicts} selected={sbxSel} focused={sbxFocused} width={width} />
+            <Sandbox tick={tick} verdicts={verdicts} attempts={attempts} selected={sbxSel} focused={sbxFocused} width={width} />
           )
           : (
             <Box>

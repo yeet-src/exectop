@@ -102,6 +102,18 @@ const check = (name, ok, detail = "") => {
   check("held run → 2 blocked", v.blocked.length === 2);
 }
 
+// ── attempts() lists every sensitive command, folded, regardless of side ───────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  m.add(ev("ls", ["ls", "-la", "/home/u/.ssh"], SBX));
+  m.add(ev("ls", ["ls", "-la", "/home/u/.ssh"], HOST));
+  m.add(ev("cc1", ["cc1", "-O2", "a.c"], SBX)); // ordinary work, not an attempt
+  const att = m.attempts();
+  check("attempts lists the sensitive command", att.some((a) => a.fold.comm === "ls"), att.map((a) => a.fold.comm).join(","));
+  check("attempts folds both sides into one row (count 2)", att.find((a) => a.fold.comm === "ls")?.count === 2);
+  check("attempts excludes ordinary work", !att.some((a) => a.fold.comm === "cc1"));
+}
+
 // ── file-open evidence upgrades the wording to a kernel fact ───────────────────
 const EXT4 = 0xef53;
 const TMPFS = 0x1021994;

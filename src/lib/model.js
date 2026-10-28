@@ -400,6 +400,21 @@ export function createModel(opts = {}) {
     return { detected: sandboxDetected(), past: p, blocked: b };
   };
 
+  // Every sensitive command exectop saw, folded — the ATTEMPTS, independent of
+  // where they ran. The outcome panels say what the sandbox did with them; this
+  // says what the agent tried, so both read at once. Same sensitivity test as
+  // the verdicts, so a row here always corresponds to a got-past or blocked row.
+  const attempts = () => {
+    const out = [];
+    for (const f of folds.values()) {
+      const labels = sensitiveReasons(f);
+      if (!labels.length) continue;
+      out.push({ fold: f, count: f.count, reach: labels.join(" and "), lastTs: f.lastTs });
+    }
+    // Most-recent first, like the panels above it.
+    return out.sort((a, b) => b.lastTs - a.lastTs);
+  };
+
   // Behavior buckets — the "what is this thing doing" layer, above the tree.
   const BUCKETS = [
     { id: "compile",  label: "compiling",       test: (c) => /^(cc1|cc1plus|cc|gcc|g\+\+|clang|clang\+\+|as|ld|ar|ranlib|collect2|make|cmake|ninja)$/.test(c) },
@@ -444,7 +459,7 @@ export function createModel(opts = {}) {
     get total() { return total; },
     get elapsed() { return (Date.now() - t0) / 1000; },
     folds: () => [...folds.values()].sort((a, b) => b.count - a.count),
-    outliers, buckets, rate, verdicts, sandboxDetected,
+    outliers, buckets, rate, verdicts, attempts, sandboxDetected,
     spark: () => {
       const now = Math.floor((Date.now() - t0) / BUCKET_MS);
       // Zero anything between the last recorded event and now, so a stream that

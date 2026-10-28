@@ -89,7 +89,22 @@ const SectionRule = ({ label, color, width: W }) => (
   </Text>
 );
 
-export default ({ tick, verdicts, selected, focused, width: W }) => (
+// The attempts panel: every sensitive command exectop saw, folded, regardless
+// of where it ran. The outcome panels above say what the sandbox did; this says
+// what the agent tried. Not selectable — it is context, not a finding to act on.
+const AttemptRow = ({ a, W }) => {
+  const labelW = Math.max(16, Math.floor(W * 0.34));
+  return (
+    <Text height="1" break="none">
+      <Text fg={C_FAINT}>{"     "}</Text>
+      <Text fg={C_DIM}>{pad(clip(a.fold.label, labelW), labelW)}</Text>
+      <Text fg={C_FAINT}>{"  " + (a.count > 1 ? `×${a.count}` : "  ") + "  "}</Text>
+      <Text fg={C_DIM}>{clip(a.reach === "the network" ? "fetches from the network" : "touches " + a.reach, Math.max(16, W - labelW - 12))}</Text>
+    </Text>
+  );
+};
+
+export default ({ tick, verdicts, attempts, selected, focused, width: W }) => (
   <Box direction="column" overflow="hidden">
     <Headline tick={tick} verdicts={verdicts} selected={selected} focused={focused} width={W} />
     {/* One-line explainer so the two panel names are self-defining. */}
@@ -147,6 +162,15 @@ export default ({ tick, verdicts, selected, focused, width: W }) => (
         v.blocked.forEach((item, i) => {
           out.push(<Row item={item} mark="✓" markColor={C_OK} selected={on && sel === base + i} W={W()} />);
         });
+      }
+
+      // Panel 3: attempts exectop saw — the raw commands, folded. Context under
+      // the outcomes, so "what it tried" and "what the sandbox did" read at once.
+      const att = attempts();
+      if (att.length) {
+        out.push(<Text height="1" />);
+        out.push(<SectionRule label="attempts exectop saw" color={C_FAINT} width={W} />);
+        att.forEach((a) => out.push(<AttemptRow a={a} W={W()} />));
       }
       return out;
     }}
