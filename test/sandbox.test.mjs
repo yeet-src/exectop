@@ -106,8 +106,12 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
   const blk = v.blocked.find((p) => p.fold.comm === "cat");
   check("open evidence → got-past says 'opened your real'", /opened your real/.test(past?.detail ?? ""), past?.detail);
   check("got-past is marked verified", past?.verified === true);
-  check("open evidence → blocked says 'empty stand-in'", /empty stand-in/.test(blk?.detail ?? ""), blk?.detail);
-  check("blocked is marked verified", blk?.verified === true);
+  // The blocked side is NOT verified: a bwrap stand-in can't be confirmed from
+  // the open (the hook sees the host mount ns). It states only the namespace
+  // fact, and never claims verification.
+  check("blocked says 'walled off', not 'stand-in'",
+        /walled off/.test(blk?.detail ?? "") && !/stand-in/.test(blk?.detail ?? ""), blk?.detail);
+  check("blocked is never marked verified", blk?.verified === false);
 }
 // without open evidence it falls back to the argv inference, not a false claim.
 {
@@ -119,7 +123,7 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
   check("no open evidence → not marked verified", !p?.verified);
 }
 
-// ── stand-in open joins by pid even when the path is truncated ─────────────────
+// ── blocked side is an unverified namespace statement ─────────────────
 // Inside the sandbox ~/.ssh is a tmpfs mount, so a read of a file under it opens
 // a path whose dentry walk stops at the mount root (leaf only, no ".ssh"). The
 // join must still catch it because the exec argv named the credential path.
@@ -129,8 +133,9 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
   m.addOpen(open(3001, ["id_demo"], TMPFS)); // truncated: no ".ssh" component
   const v = m.verdicts();
   const blk = v.blocked.find((p) => p.fold.comm === "cat");
-  check("truncated stand-in open still joins → 'empty stand-in'", /empty stand-in/.test(blk?.detail ?? ""), blk?.detail);
-  check("truncated stand-in → verified", blk?.verified === true);
+  // Even with a tmpfs open recorded, the blocked side stays an unverified
+  // namespace statement — we do not trust the stand-in signal for bwrap.
+  check("blocked stays 'walled off' and unverified", /walled off/.test(blk?.detail ?? "") && blk?.verified === false, blk?.detail);
 }
 // ── mount / sh -c mount set up the sandbox; never a credential finding ─────────
 {

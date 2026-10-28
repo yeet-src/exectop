@@ -371,10 +371,20 @@ export function createModel(opts = {}) {
         past.push({ fold: f, ts: lastOut, reach, verified: outReached, detail });
       }
       if (inN) {
-        const detail = inStandin
-          ? `ran inside the sandbox · saw an empty stand-in, not your real ${named}`
-          : `ran inside the sandbox · ${reach} was walled off`;
-        blocked.push({ fold: f, ts: lastIn, reach, verified: inStandin, detail });
+        // The blocked side is NOT kernel-verified. A bwrap stand-in is a
+        // per-namespace mount, and security_file_open resolves the inode against
+        // the host mount namespace — so the superblock magic of a sandboxed open
+        // reads as the real filesystem even when the stand-in genuinely hid the
+        // file (measured against real bwrap). A missing file in the stand-in also
+        // fails before the hook fires, so there is often no open at all. The
+        // truth we DO have is the namespace: this command ran inside the sandbox,
+        // where that credential path is walled off. We state exactly that and
+        // claim nothing about the open we cannot see. (inStandin/inReached are
+        // left computed but intentionally unused for wording.)
+        blocked.push({
+          fold: f, ts: lastIn, reach, verified: false,
+          detail: `ran inside the sandbox · ${reach} walled off`,
+        });
       }
     }
     // Most recent first: a live watcher cares about what just happened.
