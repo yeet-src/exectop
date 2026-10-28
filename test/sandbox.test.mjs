@@ -90,5 +90,34 @@ const check = (name, ok, detail = "") => {
   check("held run → 2 blocked", v.blocked.length === 2);
 }
 
+// ── file-open evidence upgrades the wording to a kernel fact ───────────────────
+const EXT4 = 0xef53;
+const TMPFS = 0x1021994;
+const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "cat", netns: 0, ts: 0 });
+{
+  const m = createModel({ hostNetns: () => HOST });
+  // outside: cat reads the real key (ext4); inside: cat sees the tmpfs stand-in.
+  m.add({ ...ev("cat", ["cat", "/home/u/.ssh/id_key"], HOST), pid: 2001 });
+  m.addOpen(open(2001, ["id_key", ".ssh", "u", "home"], EXT4));
+  m.add({ ...ev("cat", ["cat", "/home/u/.ssh/id_key"], SBX), pid: 2002 });
+  m.addOpen(open(2002, ["id_key", ".ssh"], TMPFS));
+  const v = m.verdicts();
+  const past = v.past.find((p) => p.fold.comm === "cat");
+  const blk = v.blocked.find((p) => p.fold.comm === "cat");
+  check("open evidence → got-past says 'opened your real'", /opened your real/.test(past?.detail ?? ""), past?.detail);
+  check("got-past is marked verified", past?.verified === true);
+  check("open evidence → blocked says 'empty stand-in'", /empty stand-in/.test(blk?.detail ?? ""), blk?.detail);
+  check("blocked is marked verified", blk?.verified === true);
+}
+// without open evidence it falls back to the argv inference, not a false claim.
+{
+  const m = createModel({ hostNetns: () => HOST });
+  m.add(ev("ssh", ["ssh", "-T", "git@github.com"], HOST));
+  const v = m.verdicts();
+  const p = v.past.find((x) => x.fold.comm === "ssh");
+  check("no open evidence → wording stays an inference", /its command reaches/.test(p?.detail ?? ""), p?.detail);
+  check("no open evidence → not marked verified", !p?.verified);
+}
+
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);

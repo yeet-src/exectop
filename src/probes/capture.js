@@ -9,15 +9,21 @@
 //
 // It also writes the raw normalized stream to /tmp/exectop-capture.json so a
 // run can be replayed against changed heuristics without re-running the load.
-import { ArrayMap, HashMap, RingBuf } from "yeet:bpf";
+import { ArrayMap, DataSec, HashMap, RingBuf } from "yeet:bpf";
 import { control } from "./probe.js";
-import { normalize } from "../lib/argv.js";
+import { normalize, normalizeOpen } from "../lib/argv.js";
 import { createModel } from "../lib/model.js";
 import { descendantsOf, procTable } from "../lib/scope.js";
 
 const traced = new HashMap(control, "traced");
 const events = new RingBuf(control, "events");
+const opens = new RingBuf(control, "opens");
 const statsMap = new ArrayMap(control, "stats_map");
+const bss = new DataSec(control, "probe.bss");
+
+// Learned root netns, so the headless report can show the sandbox verdicts the
+// TUI shows. Polled below, like the dropped counter.
+let hostNetns = 0;
 
 // Kernel-side drop count. A non-zero value means the ring filled faster than
 // it drained, so every number in the report is a floor rather than a total.
@@ -37,8 +43,11 @@ if (!root) {
   yeet.exit();
 }
 
-const model = createModel();
+const model = createModel({ hostNetns: () => hostNetns });
 const raw = [];
+const pollNetns = setInterval(async () => {
+  try { const v = Number((await bss.read("host_netns")) ?? 0); if (v) hostNetns = v; } catch {}
+}, 500);
 
 await traced.update({ tgid: root }, { depth: 0 });
 // Seed the descendants that already exist, exactly as main.jsx does. Without
@@ -53,6 +62,7 @@ const sub = await events.subscribe((w) => {
   raw.push(e);
   model.add(e);
 });
+const osub = await opens.subscribe((w) => model.addOpen(normalizeOpen(w)));
 
 setTimeout(async () => {
   await report();
@@ -76,6 +86,17 @@ async function report() {
   if (!outs.length) console.log("  (nothing)");
   for (const o of outs) {
     console.log(`  ▲ ${o.fold.label.slice(0, 62).padEnd(62)} ${o.reasons.join(", ")}`);
+  }
+
+  const v = model.verdicts();
+  if (v.detected) {
+    console.log(`\n-- sandbox (root netns ${hostNetns}) --`);
+    console.log(v.past.length ? `  ✗ ${v.past.length} got past the sandbox` : "  ✓ the sandbox held");
+    for (const p of v.past) console.log(`    ✗ ${p.fold.label.slice(0, 40).padEnd(40)} ${p.detail}${p.verified ? "  [verified]" : ""}`);
+    console.log(`  ✓ ${v.blocked.length} blocked by the sandbox`);
+    for (const b of v.blocked) console.log(`    ✓ ${b.fold.label.slice(0, 40).padEnd(40)} ${b.detail}${b.verified ? "  [verified]" : ""}`);
+  } else {
+    console.log("\n-- sandbox -- (no sandboxed command observed)");
   }
 
   console.log("\n-- folded (top 25) --");

@@ -53,14 +53,21 @@ const Headline = ({ tick, verdicts, width: W }) => (
 // One finding row: a mark, the command, and the plain-language detail. `sel` is
 // the index into the flattened [past…, blocked…] list, so one cursor moves
 // across both panels and Enter can drop into the tree.
-const Row = ({ item, mark, markColor, selected, W }) => (
-  <Text height="1" break="none" bg={selected ? C_SEL_BG : undefined}>
-    <Text fg={markColor}>{"  " + mark + " "}</Text>
-    <Text fg={C_FAINT}>{pad(ageOf(item.ts), 5)}</Text>
-    <Text bold fg={C_TEXT}>{"  " + pad(clip(item.fold.label, Math.max(16, Math.floor(W * 0.34))), Math.max(16, Math.floor(W * 0.34)))}</Text>
-    <Text fg={C_DIM}>{pad("  " + clip(item.detail, Math.max(16, W - Math.floor(W * 0.34) - 14)), Math.max(16, W - Math.floor(W * 0.34) - 12))}</Text>
-  </Text>
-);
+// The detail is dimmed when it is an argv inference and brighter when the
+// file-open probe verified it (opened the real file / saw the stand-in), so the
+// eye can tell a kernel fact from an educated guess without extra chrome.
+const Row = ({ item, mark, markColor, selected, W }) => {
+  const labelW = Math.max(16, Math.floor(W * 0.34));
+  const detailW = Math.max(16, W - labelW - 14);
+  return (
+    <Text height="1" break="none" bg={selected ? C_SEL_BG : undefined}>
+      <Text fg={markColor}>{"  " + mark + " "}</Text>
+      <Text fg={C_FAINT}>{pad(ageOf(item.ts), 5)}</Text>
+      <Text bold fg={C_TEXT}>{"  " + pad(clip(item.fold.label, labelW), labelW)}</Text>
+      <Text fg={item.verified ? C_TEXT : C_DIM}>{pad("  " + clip(item.detail, detailW), detailW + 2)}</Text>
+    </Text>
+  );
+};
 
 const SectionRule = ({ label, color, width: W }) => (
   <Text height="1" break="none" fg={color}>

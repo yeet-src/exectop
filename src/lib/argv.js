@@ -45,6 +45,30 @@ export const normalize = (r) => {
     argv: splitArgs(rec.args, n(rec.args_len), !!n(rec.truncated)),
     depth: n(rec.depth),
     netns: n(rec.netns),
+  };
+};
+
+// A file-open record (open_event) → the shape the model's addOpen consumes.
+// `comp` arrives from yeet:bpf as an array of C strings (char[N][M]); the kernel
+// fills it leaf-first, so comps[0] is the opened file's own name.
+export const normalizeOpen = (r) => {
+  const rec = r.open_event ?? r;
+  const n = (v) => (typeof v === "bigint" ? Number(v) : v);
+  const raw = rec.comp ?? [];
+  const comps = [];
+  for (let i = 0; i < Math.min(n(rec.comps) ?? 0, raw.length); i++) {
+    // Each entry is already a string; guard the odd byte-array shape just in case.
+    const c = raw[i];
+    comps.push(typeof c === "string" ? c : String.fromCharCode(...[...(c ?? [])].filter(Boolean)));
+  }
+  return {
+    ts: n(rec.ts_ns) / 1e6,
+    pid: n(rec.pid),
+    netns: n(rec.netns),
+    magic: n(rec.sb_magic),
+    isDir: !!n(rec.is_dir),
+    comm: String(rec.comm ?? ""),
+    comps,
     forkToExecUs: n(rec.fork_to_exec_ns) / 1000,
     truncated: !!n(rec.truncated),
   };

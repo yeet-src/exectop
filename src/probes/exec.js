@@ -4,10 +4,11 @@
 import { signal } from "yeet:tui";
 import { ArrayMap, DataSec, HashMap, RingBuf } from "yeet:bpf";
 import { control } from "./probe.js";
-import { normalize } from "../lib/argv.js";
+import { normalize, normalizeOpen } from "../lib/argv.js";
 import { createModel, foldKey } from "../lib/model.js";
 
 const events = new RingBuf(control, "events");
+const opens = new RingBuf(control, "opens");
 const traced = new HashMap(control, "traced");
 const bss = new DataSec(control, "probe.bss");
 const statsMap = new ArrayMap(control, "stats_map");
@@ -137,6 +138,16 @@ await events.subscribe((w) => {
   model.add(e);
   lastExecAt = Date.now();
   flashes.set(foldKey(e), Date.now() + FLASH_MS);
+  dirty = true;
+});
+
+// File opens feed the same model as a side channel: the exec stream says a
+// command references a credential path, the open stream says whether its read
+// landed on the real file or the sandbox's stand-in. The model joins them by
+// pid. Credential-shaped opens are rare, so this never approaches the exec rate.
+await opens.subscribe((w) => {
+  if (pausedFlag) return;
+  model.addOpen(normalizeOpen(w));
   dirty = true;
 });
 

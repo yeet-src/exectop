@@ -94,11 +94,27 @@ const SENSITIVE = [
     test: (full, comm) => /^(curl|wget|nc|ncat|ssh|scp|sftp|rsync)$/.test(comm) || /\b(curl|wget)\b/.test(full) },
 ];
 
+// Filesystem magic numbers. A credential file read for real lives on a normal
+// disk filesystem; the sandbox's stand-in is a tmpfs directory mounted over the
+// path, or /dev/null (devtmpfs) over a file. So the magic of the opened inode's
+// filesystem is the kernel's own answer to "real file or stand-in".
+const FS_STANDIN = new Set([
+  0x1021994, // tmpfs — the empty dir the sandbox mounts over ~/.ssh
+  0x1cd1,    // devpts
+]);
+const DEVTMPFS_NAMES = /^(null|zero|full)$/; // /dev/null stand-in over a file
+// Credential-shaped leaf or directory names, matched on the open's path
+// components rather than argv text — this is the file that was actually opened.
+const CRED_PATH = /^(\.ssh|\.aws|\.netrc|id_rsa|id_ed25519|credentials|config)$|\.pem$/;
+
 export function createModel(opts = {}) {
   // A thunk returning the watched root's net namespace inode, or 0 if unknown.
   // When 0, the sandbox dimension stays off: no verdicts, no columns.
   const hostNetns = opts.hostNetns ?? (() => 0);
   const folds = new Map();   // key -> {key,label,comm,count,firstTs,lastTs,lats[],parents:Set,samples[],netnses:Set}
+  // Per-pid credential-open outcomes, the join target for exec folds: a command
+  // and its file opens share a pid. { reached: bool, standin: bool, path }.
+  const credOpens = new Map();
   const parentComm = new Map(); // pid -> comm, so we can name a child's parent
   let total = 0;
   // Rate history for the sparkline. 500ms buckets over 60s: at a realistic
@@ -111,6 +127,24 @@ export function createModel(opts = {}) {
   let lastBucket = 0;
 
   const seed = (pid, comm) => parentComm.set(pid, comm);
+
+  // A file-open event (lib/argv.normalizeOpen). We only keep credential-shaped
+  // opens, and only the outcome that matters: did this pid reach a real file, or
+  // did it land on a stand-in? One pid can do both over its life; we remember
+  // whichever happened, so a command that reached a real key is never softened
+  // by a later stand-in open.
+  const addOpen = (o) => {
+    const comps = o.comps ?? [];
+    const leaf = comps[0] ?? "";
+    const cred = comps.some((c) => CRED_PATH.test(c));
+    if (!cred) return;
+    const standin = FS_STANDIN.has(o.magic) || (o.magic === 0 && DEVTMPFS_NAMES.test(leaf)) || DEVTMPFS_NAMES.test(leaf);
+    const path = comps.slice().reverse().join("/");
+    const prev = credOpens.get(o.pid) ?? { reached: false, standin: false, path: "" };
+    if (standin) prev.standin = true; else prev.reached = true;
+    if (!prev.path || !standin) prev.path = path; // prefer the real path when known
+    credOpens.set(o.pid, prev);
+  };
 
   const add = (e) => {
     total++;
@@ -281,27 +315,47 @@ export function createModel(opts = {}) {
       const labels = sensitiveReasons(f);
       if (!labels.length) continue;
       const reach = labels.join(" and ");
-      // Partition this fold's samples by which side of the boundary they ran on.
+      // Partition this fold's samples by which side of the boundary they ran on,
+      // and gather any file-open evidence those exact pids produced — that is
+      // what turns "its command reaches X" (argv inference) into "opened your
+      // real X" / "saw an empty stand-in" (a kernel fact about the open).
       let outN = 0;
       let inN = 0;
       let lastOut = 0;
       let lastIn = 0;
+      let outReached = false;
+      let outStandin = false;
+      let inReached = false;
+      let inStandin = false;
+      let credPath = "";
       for (const s of f.samples) {
         if (!s.netns) continue;
-        if (s.netns === host) { outN++; lastOut = Math.max(lastOut, s.wallTs); }
-        else { inN++; lastIn = Math.max(lastIn, s.wallTs); }
+        const ev = credOpens.get(s.pid);
+        if (ev?.path) credPath = ev.path;
+        if (s.netns === host) {
+          outN++; lastOut = Math.max(lastOut, s.wallTs);
+          if (ev?.reached) outReached = true;
+          if (ev?.standin) outStandin = true;
+        } else {
+          inN++; lastIn = Math.max(lastIn, s.wallTs);
+          if (ev?.reached) inReached = true;
+          if (ev?.standin) inStandin = true;
+        }
       }
+      const named = credPath ? `/${credPath}` : reach;
       if (outN) {
-        past.push({
-          fold: f, ts: lastOut, reach,
-          detail: `ran outside the sandbox · its command reaches ${reach}`,
-        });
+        // Outside the sandbox, a reached real file is the strong statement; fall
+        // back to the argv inference when we have no open evidence for it.
+        const detail = outReached
+          ? `ran outside the sandbox · opened your real ${named}`
+          : `ran outside the sandbox · its command reaches ${reach}`;
+        past.push({ fold: f, ts: lastOut, reach, verified: outReached, detail });
       }
       if (inN) {
-        blocked.push({
-          fold: f, ts: lastIn, reach,
-          detail: `ran inside the sandbox · ${reach} was walled off`,
-        });
+        const detail = inStandin
+          ? `ran inside the sandbox · saw an empty stand-in, not your real ${named}`
+          : `ran inside the sandbox · ${reach} was walled off`;
+        blocked.push({ fold: f, ts: lastIn, reach, verified: inStandin, detail });
       }
     }
     // Most recent first: a live watcher cares about what just happened.
@@ -350,7 +404,7 @@ export function createModel(opts = {}) {
   };
 
   return {
-    add, seed,
+    add, addOpen, seed,
     get total() { return total; },
     get elapsed() { return (Date.now() - t0) / 1000; },
     folds: () => [...folds.values()].sort((a, b) => b.count - a.count),
