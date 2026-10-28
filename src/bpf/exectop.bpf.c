@@ -269,3 +269,99 @@ int on_exec(struct trace_event_raw_sched_process_exec *ctx)
 	}
 	return 0;
 }
+
+// ── layer 2: file opens, real vs stand-in ────────────────────────────────────
+//
+// The sandbox does not refuse a denied read; it mounts a stand-in over the path
+// (an empty tmpfs directory over ~/.ssh, /dev/null over ~/.aws/credentials) and
+// lets the open SUCCEED on that. So "was it blocked" is not an errno — it is
+// WHICH filesystem the opened inode lives on. A real credential file is on the
+// root fs (ext4); a stand-in is on tmpfs or devtmpfs. We read the superblock
+// magic of the opened file and let JS name it.
+//
+// fentry/security_file_open, NOT a BPF LSM hook: we only observe, so fentry on
+// the LSM function needs just BTF + fentry (no lsm=bpf on the cmdline). It gets
+// the `struct file *` as arg0, before the read returns.
+
+#define DNAME_LEN   40   // leaf+parent component, bounded for the verifier
+#define PATH_COMPS   4   // how many trailing path components we carry
+
+struct open_event {
+	__u64 ts_ns;
+	__u32 pid;
+	__u32 netns;        // same split as exec: host vs sandbox namespace
+	__u64 sb_magic;     // superblock magic of the opened inode's filesystem
+	__u32 comps;        // how many path components we captured (leaf first)
+	__u8  is_dir;       // the opened inode is a directory
+	__u8  _pad[3];
+	char  comm[COMM_LEN];
+	// Trailing path components, leaf first: comp[0]=".ssh" or "credentials",
+	// comp[1]=parent, … Each a short bounded string. JS joins what it needs to
+	// recognize a credential-shaped path; walking the full path in-kernel is the
+	// dentry-walk the verifier fights, so we cap at PATH_COMPS.
+	char  comp[PATH_COMPS][DNAME_LEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 << 22); // 4 MiB; open events are smaller and rarer
+} opens SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct open_event);
+} open_scratch SEC(".maps");
+
+// S_IFDIR test without pulling in mode constants: 0040000 is the dir bit.
+#define S_IFMT_  00170000
+#define S_IFDIR_ 00040000
+
+SEC("fentry/security_file_open")
+int BPF_PROG(on_file_open, struct file *file)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	__u32 depth = 0;
+	if (!in_scope(pid, &depth))
+		return 0;
+
+	__u32 zero = 0;
+	struct open_event *e = bpf_map_lookup_elem(&open_scratch, &zero);
+	if (!e)
+		return 0;
+
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	e->ts_ns = bpf_ktime_get_ns();
+	e->pid = pid;
+	e->netns = netns_of(task);
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	struct inode *inode = BPF_CORE_READ(file, f_inode);
+	e->sb_magic = BPF_CORE_READ(inode, i_sb, s_magic);
+	umode_t mode = BPF_CORE_READ(inode, i_mode);
+	e->is_dir = ((mode & S_IFMT_) == S_IFDIR_);
+
+	// Walk a bounded number of trailing path components. Each step is one
+	// dentry up (d_parent) and one name read — fixed count, so the verifier
+	// accepts it where an unbounded walk would not.
+	struct dentry *d = BPF_CORE_READ(file, f_path.dentry);
+	e->comps = 0;
+#pragma unroll
+	for (int i = 0; i < PATH_COMPS; i++) {
+		if (!d)
+			break;
+		const unsigned char *name = BPF_CORE_READ(d, d_name.name);
+		if (!name)
+			break;
+		bpf_probe_read_kernel_str(&e->comp[i], DNAME_LEN, name);
+		e->comps = i + 1;
+		struct dentry *parent = BPF_CORE_READ(d, d_parent);
+		if (parent == d) // reached the mount root; d_parent points to itself
+			break;
+		d = parent;
+	}
+
+	bpf_ringbuf_output(&opens, e, sizeof(*e), 0);
+	return 0;
+}

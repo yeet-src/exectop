@@ -16,6 +16,7 @@ async function load() {
     try {
       return await new BpfObject({ exe, base: import.meta.dirname })
         .bind("events", { kind: "ringbuf", btf_struct: "exec_event" })
+        .bind("opens", { kind: "ringbuf", btf_struct: "open_event" })
         .bind("traced", { kind: "hash" })
         .bind("fork_ts", { kind: "hash" })
         .bind("stats_map", { kind: "array" })
