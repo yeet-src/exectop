@@ -146,7 +146,9 @@ export function createModel(opts = {}) {
     const leaf = comps[0] ?? "";
     const onStandinFs = FS_STANDIN.has(o.magic) || DEVTMPFS_NAMES.test(leaf);
     if (onStandinFs) return; // not a real read; and not a trustworthy block signal
-    const path = comps.slice().reverse().join("/");
+    // Components come leaf-first and can include the mount root "/" one or more
+    // times; reverse to root-first and collapse the leading slashes into one.
+    const path = "/" + comps.slice().reverse().filter((c) => c && c !== "/").join("/");
     const prev = credOpens.get(o.pid) ?? { reached: false, path: "" };
     prev.reached = true;
     if (!prev.path) prev.path = path;
@@ -351,7 +353,7 @@ export function createModel(opts = {}) {
           inN++; lastIn = Math.max(lastIn, s.wallTs);
         }
       }
-      const named = reachedPath ? `/${reachedPath}` : reach;
+      const named = reachedPath || reach;
       if (outN) {
         // Outside the sandbox, a reached real file is the strong statement; fall
         // back to the argv inference when we have no open evidence for it.

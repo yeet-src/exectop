@@ -5,6 +5,7 @@
 //
 //   node test/sandbox.test.mjs
 import { createModel } from "../src/lib/model.js";
+import { normalize } from "../src/lib/argv.js";
 
 const HOST = 4026531840;   // the agent's own namespace
 const SBX = 4026532355;    // bwrap's unshared namespace
@@ -21,6 +22,17 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "ok  " : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
   if (!ok) failed++;
 };
+
+// ── normalize must keep every exec field (regression: the layer-2 edit once
+//     truncated the exec record, dropping forkToExecUs → NaN in the tree) ───────
+{
+  const e = normalize({ exec_event: {
+    ts_ns: 1n, fork_to_exec_ns: 470000n, pid: 5, ppid: 1, args_len: 3,
+    depth: 1, netns: 100, truncated: 0, comm: "ls", args: new Uint8Array([108, 115, 0]),
+  } });
+  check("normalize keeps forkToExecUs", e.forkToExecUs === 470);
+  check("normalize keeps truncated + netns", e.truncated === false && e.netns === 100);
+}
 
 // ── without a known root namespace, the dimension is OFF ──────────────────────
 {
