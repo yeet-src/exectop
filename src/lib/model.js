@@ -133,23 +133,23 @@ export function createModel(opts = {}) {
   // longer carries the `.ssh` component (the dentry walk stops at the tmpfs
   // mount root). We can't rely on the open's path alone, so we also accept an
   // open from a pid we already know was after a credential.
-  const credPids = new Set();
-
-  // A file-open event (lib/argv.normalizeOpen). We keep an open if its path is
-  // credential-shaped OR it comes from a pid whose command was. We record the
-  // outcome that matters: did this pid reach a real file, or land on a stand-in?
-  // One pid can do both; we remember whichever happened, so a command that
-  // reached a real key is never softened by a later stand-in open.
+  // A file-open event (lib/argv.normalizeOpen). We only use opens for ONE claim
+  // we can actually stand behind: a credential file that was read FOR REAL,
+  // outside the sandbox. That requires the open's OWN path to be
+  // credential-shaped (so a later libc open from the same pid can't hijack the
+  // path) and to sit on a real disk filesystem. The blocked/stand-in side is not
+  // trusted here — a bwrap stand-in is a per-namespace mount the hook can't see —
+  // so we record only the reached case and the file it reached.
   const addOpen = (o) => {
     const comps = o.comps ?? [];
+    if (!comps.some((c) => CRED_PATH.test(c))) return; // its own path must be credential-shaped
     const leaf = comps[0] ?? "";
-    const standin = FS_STANDIN.has(o.magic) || (o.magic === 0 && DEVTMPFS_NAMES.test(leaf)) || DEVTMPFS_NAMES.test(leaf);
-    const cred = comps.some((c) => CRED_PATH.test(c)) || (credPids.has(o.pid) && (standin || comps.length));
-    if (!cred) return;
+    const onStandinFs = FS_STANDIN.has(o.magic) || DEVTMPFS_NAMES.test(leaf);
+    if (onStandinFs) return; // not a real read; and not a trustworthy block signal
     const path = comps.slice().reverse().join("/");
-    const prev = credOpens.get(o.pid) ?? { reached: false, standin: false, path: "" };
-    if (standin) prev.standin = true; else prev.reached = true;
-    if (!prev.path || !standin) prev.path = path; // prefer the real path when known
+    const prev = credOpens.get(o.pid) ?? { reached: false, path: "" };
+    prev.reached = true;
+    if (!prev.path) prev.path = path;
     credOpens.set(o.pid, prev);
   };
 
@@ -171,10 +171,6 @@ export function createModel(opts = {}) {
     // boundary — the escape run ran `ls ~/.ssh` once sandboxed and once not —
     // so the verdict pass walks per-sample namespaces, not a single fold flag.
     if (typeof e.netns === "number" && e.netns) f.netnses.add(e.netns);
-    // Remember pids whose command referenced a credential path, so a later open
-    // from the same pid counts even when the stand-in truncated its path.
-    if (/(\/\.ssh\b|\/\.aws\b|\/\.netrc\b|id_rsa|id_ed25519|\.pem\b|credentials)/.test(e.argv.join(" ")))
-      credPids.add(e.pid);
     // Stamp wall-clock arrival. e.ts is the kernel's boot-relative ktime, so it
     // cannot be compared to Date.now() for an age — the same trap the rate
     // buckets hit. The verdict "age" column reads wallTs instead.
@@ -334,34 +330,28 @@ export function createModel(opts = {}) {
       const labels = sensitiveReasons(f);
       if (!labels.length) continue;
       const reach = labels.join(" and ");
-      // Partition this fold's samples by which side of the boundary they ran on,
-      // and gather any file-open evidence those exact pids produced — that is
-      // what turns "its command reaches X" (argv inference) into "opened your
-      // real X" / "saw an empty stand-in" (a kernel fact about the open).
+      // Partition this fold's samples by which side of the boundary they ran on.
+      // Only the host side uses file-open evidence, and only to confirm a real
+      // read: if one of these pids opened a credential file on a real filesystem,
+      // "its command reaches X" (argv inference) becomes "opened your real X" (a
+      // kernel fact). The sandbox side has no trustworthy open signal.
       let outN = 0;
       let inN = 0;
       let lastOut = 0;
       let lastIn = 0;
       let outReached = false;
-      let outStandin = false;
-      let inReached = false;
-      let inStandin = false;
-      let credPath = "";
+      let reachedPath = "";
       for (const s of f.samples) {
         if (!s.netns) continue;
-        const ev = credOpens.get(s.pid);
-        if (ev?.path) credPath = ev.path;
         if (s.netns === host) {
           outN++; lastOut = Math.max(lastOut, s.wallTs);
-          if (ev?.reached) outReached = true;
-          if (ev?.standin) outStandin = true;
+          const ev = credOpens.get(s.pid);
+          if (ev?.reached) { outReached = true; if (ev.path) reachedPath = ev.path; }
         } else {
           inN++; lastIn = Math.max(lastIn, s.wallTs);
-          if (ev?.reached) inReached = true;
-          if (ev?.standin) inStandin = true;
         }
       }
-      const named = credPath ? `/${credPath}` : reach;
+      const named = reachedPath ? `/${reachedPath}` : reach;
       if (outN) {
         // Outside the sandbox, a reached real file is the strong statement; fall
         // back to the argv inference when we have no open evidence for it.

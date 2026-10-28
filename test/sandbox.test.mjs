@@ -137,6 +137,18 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
   // namespace statement — we do not trust the stand-in signal for bwrap.
   check("blocked stays 'walled off' and unverified", /walled off/.test(blk?.detail ?? "") && blk?.verified === false, blk?.detail);
 }
+// ── a later non-credential open must not hijack the verified path ──────────────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  m.add({ ...ev("cat", ["cat", "/home/u/.ssh/id_key"], HOST), pid: 4001 });
+  m.addOpen(open(4001, ["id_key", ".ssh", "u", "home"], EXT4));    // the real key
+  m.addOpen(open(4001, ["libc.so.6", "aarch64-linux-gnu", "lib"], EXT4)); // libc, same pid
+  const v = m.verdicts();
+  const p = v.past.find((x) => x.fold.comm === "cat");
+  check("verified path names the credential file, not libc",
+        /id_key/.test(p?.detail ?? "") && !/libc/.test(p?.detail ?? ""), p?.detail);
+}
+
 // ── mount / sh -c mount set up the sandbox; never a credential finding ─────────
 {
   const m = createModel({ hostNetns: () => HOST });
