@@ -128,17 +128,24 @@ export function createModel(opts = {}) {
 
   const seed = (pid, comm) => parentComm.set(pid, comm);
 
-  // A file-open event (lib/argv.normalizeOpen). We only keep credential-shaped
-  // opens, and only the outcome that matters: did this pid reach a real file, or
-  // did it land on a stand-in? One pid can do both over its life; we remember
-  // whichever happened, so a command that reached a real key is never softened
-  // by a later stand-in open.
+  // Pids whose exec argv referenced a credential path — the sandbox mounts a
+  // stand-in OVER the path, so a read inside it opens a file whose own path no
+  // longer carries the `.ssh` component (the dentry walk stops at the tmpfs
+  // mount root). We can't rely on the open's path alone, so we also accept an
+  // open from a pid we already know was after a credential.
+  const credPids = new Set();
+
+  // A file-open event (lib/argv.normalizeOpen). We keep an open if its path is
+  // credential-shaped OR it comes from a pid whose command was. We record the
+  // outcome that matters: did this pid reach a real file, or land on a stand-in?
+  // One pid can do both; we remember whichever happened, so a command that
+  // reached a real key is never softened by a later stand-in open.
   const addOpen = (o) => {
     const comps = o.comps ?? [];
     const leaf = comps[0] ?? "";
-    const cred = comps.some((c) => CRED_PATH.test(c));
-    if (!cred) return;
     const standin = FS_STANDIN.has(o.magic) || (o.magic === 0 && DEVTMPFS_NAMES.test(leaf)) || DEVTMPFS_NAMES.test(leaf);
+    const cred = comps.some((c) => CRED_PATH.test(c)) || (credPids.has(o.pid) && (standin || comps.length));
+    if (!cred) return;
     const path = comps.slice().reverse().join("/");
     const prev = credOpens.get(o.pid) ?? { reached: false, standin: false, path: "" };
     if (standin) prev.standin = true; else prev.reached = true;
@@ -164,6 +171,10 @@ export function createModel(opts = {}) {
     // boundary — the escape run ran `ls ~/.ssh` once sandboxed and once not —
     // so the verdict pass walks per-sample namespaces, not a single fold flag.
     if (typeof e.netns === "number" && e.netns) f.netnses.add(e.netns);
+    // Remember pids whose command referenced a credential path, so a later open
+    // from the same pid counts even when the stand-in truncated its path.
+    if (/(\/\.ssh\b|\/\.aws\b|\/\.netrc\b|id_rsa|id_ed25519|\.pem\b|credentials)/.test(e.argv.join(" ")))
+      credPids.add(e.pid);
     // Stamp wall-clock arrival. e.ts is the kernel's boot-relative ktime, so it
     // cannot be compared to Date.now() for an age — the same trap the rate
     // buckets hit. The verdict "age" column reads wallTs instead.
@@ -295,10 +306,18 @@ export function createModel(opts = {}) {
   // then reads as the sandbox-maker itself reaching credentials — the opposite
   // of true. The child's own exec is what we judge, so a launcher contributes
   // no verdict of its own.
-  const LAUNCHER = /^(unshare|bwrap|nsenter|sudo|doas|env|setsid|chroot|runuser|setpriv|timeout|stdbuf|nice|ionice|firejail)$/;
+  // Launchers carry a child command in their argv tail; mount/umount set up or
+  // tear down the stand-in itself — neither reads a secret, so neither is a
+  // credential finding in its own right.
+  const LAUNCHER = /^(unshare|bwrap|nsenter|sudo|doas|env|setsid|chroot|runuser|setpriv|timeout|stdbuf|nice|ionice|firejail|mount|umount)$/;
 
   const sensitiveReasons = (f) => {
     if (LAUNCHER.test(f.comm)) return [];
+    // A shell whose script is itself just a launcher/mount (`sh -c 'mount …'`,
+    // `sh -c 'unshare …'`) is setting the sandbox up, not reading a secret —
+    // the fold label carries the leading command, so key off that.
+    if (/^(sh|bash|dash|zsh) -c /.test(f.label) && LAUNCHER.test(f.label.replace(/^\S+ -c /, "").split(/\s/)[0] ?? ""))
+      return [];
     const full = f.samples.map((s) => s.argv.join(" ")).join(" \n");
     return SENSITIVE.filter((s) => s.test(full, f.comm)).map((s) => s.label);
   };

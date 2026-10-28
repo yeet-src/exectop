@@ -119,5 +119,31 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
   check("no open evidence → not marked verified", !p?.verified);
 }
 
+// ── stand-in open joins by pid even when the path is truncated ─────────────────
+// Inside the sandbox ~/.ssh is a tmpfs mount, so a read of a file under it opens
+// a path whose dentry walk stops at the mount root (leaf only, no ".ssh"). The
+// join must still catch it because the exec argv named the credential path.
+{
+  const m = createModel({ hostNetns: () => HOST });
+  m.add({ ...ev("cat", ["cat", "/home/u/.ssh/id_demo"], SBX), pid: 3001 });
+  m.addOpen(open(3001, ["id_demo"], TMPFS)); // truncated: no ".ssh" component
+  const v = m.verdicts();
+  const blk = v.blocked.find((p) => p.fold.comm === "cat");
+  check("truncated stand-in open still joins → 'empty stand-in'", /empty stand-in/.test(blk?.detail ?? ""), blk?.detail);
+  check("truncated stand-in → verified", blk?.verified === true);
+}
+// ── mount / sh -c mount set up the sandbox; never a credential finding ─────────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  m.add(ev("mount", ["mount", "-t", "tmpfs", "tmpfs", "/home/u/.ssh"], SBX));
+  m.add(ev("sh", ["sh", "-c", "mount -t tmpfs tmpfs /home/u/.ssh"], SBX));
+  const v = m.verdicts();
+  check("mount is not a sandbox finding",
+        ![...v.past, ...v.blocked].some((p) => p.fold.comm === "mount"),
+        [...v.past, ...v.blocked].map((p) => p.fold.comm).join(","));
+  check("sh -c mount is not a finding",
+        ![...v.past, ...v.blocked].some((p) => /^sh -c mount/.test(p.fold.label)));
+}
+
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);
