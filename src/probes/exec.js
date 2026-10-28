@@ -23,7 +23,20 @@ const statsMap = new ArrayMap(control, "stats_map");
 export const droppedCount = signal(0);
 export const dropped = () => droppedCount.get();
 
-const model = createModel();
+// The net namespace of the watched root (Claude Code), learned in-kernel at its
+// first fork. 0 until learned — and 0 is also the honest answer for a scope
+// that is not a single agent (whole-host, a container). The sandbox view turns
+// on only once this is non-zero AND at least one exec has run in a different
+// namespace, so an ordinary `exectop` run never grows sandbox columns it can't
+// fill. See probes' host_netns comment for why the kernel learns it rather than
+// being told.
+export const hostNetns = signal(0);
+export const hostNetnsValue = () => hostNetns.get();
+
+// Pass the root netns in as a thunk so the model can tag each exec
+// sandboxed/host. It reads live, so execs captured before the netns was learned
+// get classified correctly on the next projection.
+const model = createModel({ hostNetns: () => hostNetns.get() });
 
 // A fold flashes for a moment after it fires, so an exec that lived 3ms is
 // still visible on screen. Map of foldKey -> expiry ms.
@@ -39,6 +52,19 @@ export const paused = signal(false);
 // anywhere. Cost real debugging time. main.jsx flips this through setPaused().
 let pausedFlag = false;
 export const setPaused = (v) => { pausedFlag = v; paused.set(v); };
+
+// Poll the learned root netns out of .bss until it lands, then stop. It is
+// written once in-kernel at the root's first fork, so a short poll is enough;
+// reading it in the ring-buffer callback would be a signal read off the
+// reactive path (gotcha: that silently kills the stream).
+let netnsSettled = false;
+setInterval(async () => {
+  if (netnsSettled) return;
+  try {
+    const v = Number((await bss.read("host_netns")) ?? 0);
+    if (v && v !== hostNetns.get()) { hostNetns.set(v); netnsSettled = true; }
+  } catch { /* advisory; the UI degrades to no sandbox columns */ }
+}, 500);
 
 // Seed the traced set with the root pid at depth 0. Everything below it is
 // added in-kernel at fork, so this is the only write JS makes.
@@ -150,3 +176,5 @@ export const stats = () => ({
 export const buckets = () => model.buckets();
 export const outliers = () => model.outliers();
 export const folds = () => model.folds();
+export const verdicts = () => model.verdicts();
+export const sandboxDetected = () => model.sandboxDetected();

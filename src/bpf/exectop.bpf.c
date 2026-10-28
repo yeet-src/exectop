@@ -37,6 +37,7 @@ struct exec_event {
 	__u32 argc;         // how many argv entries the kernel reported
 	__u32 args_len;     // bytes used in args[]
 	__u32 depth;        // generations below the traced root
+	__u32 netns;        // net namespace inode of the exec'ing task
 	__u8  truncated;    // argv didn't fit in ARGV_MAX slots or ARGV_BUF bytes
 	__u8  _pad[3];
 	char  comm[COMM_LEN];
@@ -110,6 +111,21 @@ struct {
 // narrows it to the actual subtree. When zero, `traced` alone decides.
 volatile __u64 target_cgid = 0;
 
+// The net namespace inode of the watched root (Claude Code). Learned, not set:
+// the first time the depth-0 root forks — which happens before it runs any
+// command, and runs in the PARENT's context so `current` IS the root — we read
+// its net namespace here. JS reads it back and compares every exec's netns to
+// it: a command whose netns differs ran inside a sandbox (bwrap unshares the
+// network namespace), one whose netns matches ran alongside the agent itself.
+// Stays 0 when the root never forks or we aren't watching a single root, in
+// which case JS keeps the sandbox columns off rather than guessing.
+__u32 host_netns = 0;
+
+static __always_inline __u32 netns_of(struct task_struct *t)
+{
+	return BPF_CORE_READ(t, nsproxy, net_ns, ns.inum);
+}
+
 // Scratch for building the event. An exec_event is ~1 KiB, far past the 512 B
 // BPF stack limit, so it lives in a per-CPU array — the standard workaround.
 struct {
@@ -159,6 +175,15 @@ int on_fork(struct trace_event_raw_sched_process_fork *ctx)
 	struct traced_val cd = { .depth = pd->depth + 1 };
 	bpf_map_update_elem(&traced, &ck, &cd, BPF_ANY);
 
+	// Learn the root's net namespace from its first fork. The fork tracepoint
+	// runs in the parent's context, so `current` is the forking (parent) task;
+	// gating on depth 0 means only the watched root teaches us this, and the
+	// first write wins so a later fork in some other namespace can't move it.
+	if (host_netns == 0 && pd->depth == 0) {
+		struct task_struct *cur = (struct task_struct *)bpf_get_current_task();
+		host_netns = netns_of(cur);
+	}
+
 	__u64 now = bpf_ktime_get_ns();
 	bpf_map_update_elem(&fork_ts, &child, &now, BPF_ANY);
 	return 0;
@@ -205,6 +230,7 @@ int on_exec(struct trace_event_raw_sched_process_exec *ctx)
 
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
+	e->netns = netns_of(task);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
 	// argv lives at mm->arg_start..arg_end as a NUL-separated blob already —

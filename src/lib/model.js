@@ -83,8 +83,22 @@ export const foldLabel = (e) => {
   return out.join(" ");
 };
 
-export function createModel() {
-  const folds = new Map();   // key -> {key,label,comm,count,firstTs,lastTs,lats[],parents:Set,samples[]}
+// How many distinct per-exec reasons an exec references (credential paths,
+// network reach). The sandbox verdict is about WHETHER a command touched one of
+// these while in or out of the sandbox, so it reuses the exact patterns the
+// outlier scorer uses — one source of truth for "what is sensitive".
+const SENSITIVE = [
+  { id: "creds", label: "credential paths",
+    test: (full) => /(\/\.ssh\b|\/\.aws\b|\/\.netrc\b|\/\.docker\/config|id_rsa|id_ed25519|\.pem\b|credentials)/.test(full) },
+  { id: "net", label: "the network",
+    test: (full, comm) => /^(curl|wget|nc|ncat|ssh|scp|sftp|rsync)$/.test(comm) || /\b(curl|wget)\b/.test(full) },
+];
+
+export function createModel(opts = {}) {
+  // A thunk returning the watched root's net namespace inode, or 0 if unknown.
+  // When 0, the sandbox dimension stays off: no verdicts, no columns.
+  const hostNetns = opts.hostNetns ?? (() => 0);
+  const folds = new Map();   // key -> {key,label,comm,count,firstTs,lastTs,lats[],parents:Set,samples[],netnses:Set}
   const parentComm = new Map(); // pid -> comm, so we can name a child's parent
   let total = 0;
   // Rate history for the sparkline. 500ms buckets over 60s: at a realistic
@@ -105,13 +119,17 @@ export function createModel() {
     let f = folds.get(key);
     if (!f) {
       f = { key, label: foldLabel(e), comm: e.comm, count: 0, firstTs: e.ts,
-            lastTs: e.ts, lats: [], parents: new Set(), samples: [] };
+            lastTs: e.ts, lats: [], parents: new Set(), samples: [], netnses: new Set() };
       folds.set(key, f);
     }
     f.count++;
     f.lastTs = e.ts;
     f.lats.push(e.forkToExecUs);
     f.parents.add(parentComm.get(e.ppid) ?? "?");
+    // Each distinct net namespace this fold ran in. One fold can straddle the
+    // boundary — the escape run ran `ls ~/.ssh` once sandboxed and once not —
+    // so the verdict pass walks per-sample namespaces, not a single fold flag.
+    if (typeof e.netns === "number" && e.netns) f.netnses.add(e.netns);
     if (f.samples.length < 40) f.samples.push(e);
     // Bucket on WALL CLOCK, not e.ts. e.ts comes from the kernel's ktime and is
     // boot-relative, so (e.ts - t0) against a Date.now() epoch is a huge
@@ -209,6 +227,77 @@ export function createModel() {
     return scored.sort((a, b) => b.score - a.score).slice(0, 6);
   };
 
+  // ── sandbox verdicts ────────────────────────────────────────────────────────
+  //
+  // The whole point of a sandbox is that sensitive work done inside it is
+  // declawed and the same work done outside it is not. So the verdict pairs two
+  // kernel-observed facts about one exec: which net namespace it ran in (host =
+  // alongside the agent, other = inside bwrap's unshared namespace), and whether
+  // its command references something sensitive (a credential path, the network).
+  //
+  // Wording is deliberately narrow, per the credibility rule: the kernel tells
+  // us an exec ran in the host namespace, NOT that it "escaped" — an approved
+  // retry, a command the sandbox excludes, and a command you ran yourself all
+  // look identical here. So a host-namespace sensitive exec reads "ran outside
+  // the sandbox", and the detail names what the command reached, from argv, not
+  // a claim about the open's result (that is layer 2, the file-open probe).
+  //
+  // isSandboxDetected(): true once we know the root's namespace AND have seen at
+  // least one exec in a different one. Until then there is no sandbox to judge.
+  const sandboxDetected = () => {
+    const host = hostNetns();
+    if (!host) return false;
+    for (const f of folds.values())
+      for (const ns of f.netnses) if (ns !== host) return true;
+    return false;
+  };
+
+  const sensitiveReasons = (f) => {
+    const full = f.samples.map((s) => s.argv.join(" ")).join(" \n");
+    return SENSITIVE.filter((s) => s.test(full, f.comm)).map((s) => s.label);
+  };
+
+  // One finding per (fold, side of the boundary) that did something sensitive.
+  // A fold that ran a sensitive command both inside and outside the sandbox
+  // yields two findings — that split is exactly the story worth telling.
+  const verdicts = () => {
+    const host = hostNetns();
+    if (!host) return { detected: false, past: [], blocked: [] };
+    const past = [];
+    const blocked = [];
+    for (const f of folds.values()) {
+      const labels = sensitiveReasons(f);
+      if (!labels.length) continue;
+      const reach = labels.join(" and ");
+      // Partition this fold's samples by which side of the boundary they ran on.
+      let outN = 0;
+      let inN = 0;
+      let lastOut = 0;
+      let lastIn = 0;
+      for (const s of f.samples) {
+        if (!s.netns) continue;
+        if (s.netns === host) { outN++; lastOut = Math.max(lastOut, s.ts); }
+        else { inN++; lastIn = Math.max(lastIn, s.ts); }
+      }
+      if (outN) {
+        past.push({
+          fold: f, ts: lastOut, reach,
+          detail: `ran outside the sandbox · its command reaches ${reach}`,
+        });
+      }
+      if (inN) {
+        blocked.push({
+          fold: f, ts: lastIn, reach,
+          detail: `ran inside the sandbox · ${reach} was walled off`,
+        });
+      }
+    }
+    // Most recent first: a live watcher cares about what just happened.
+    past.sort((a, b) => b.ts - a.ts);
+    blocked.sort((a, b) => b.ts - a.ts);
+    return { detected: sandboxDetected(), past, blocked };
+  };
+
   // Behavior buckets — the "what is this thing doing" layer, above the tree.
   const BUCKETS = [
     { id: "compile",  label: "compiling",       test: (c) => /^(cc1|cc1plus|cc|gcc|g\+\+|clang|clang\+\+|as|ld|ar|ranlib|collect2|make|cmake|ninja)$/.test(c) },
@@ -253,7 +342,7 @@ export function createModel() {
     get total() { return total; },
     get elapsed() { return (Date.now() - t0) / 1000; },
     folds: () => [...folds.values()].sort((a, b) => b.count - a.count),
-    outliers, buckets, rate,
+    outliers, buckets, rate, verdicts, sandboxDetected,
     spark: () => {
       const now = Math.floor((Date.now() - t0) / BUCKET_MS);
       // Zero anything between the last recorded event and now, so a stream that

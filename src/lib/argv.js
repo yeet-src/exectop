@@ -44,6 +44,7 @@ export const normalize = (r) => {
     comm: String(rec.comm ?? ""),
     argv: splitArgs(rec.args, n(rec.args_len), !!n(rec.truncated)),
     depth: n(rec.depth),
+    netns: n(rec.netns),
     forkToExecUs: n(rec.fork_to_exec_ns) / 1000,
     truncated: !!n(rec.truncated),
   };
