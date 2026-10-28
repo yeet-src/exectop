@@ -62,6 +62,22 @@ const check = (name, ok, detail = "") => {
         ![...v.past, ...v.blocked].some((p) => p.fold.comm === "cc1" || p.fold.comm === "node"));
 }
 
+// ── a launcher is not itself a finding ────────────────────────────────────────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  // unshare runs in the host namespace and its argv carries `ls ~/.ssh`; it is
+  // the thing that MAKES the sandbox, not a command reaching credentials.
+  m.add(ev("unshare", ["unshare", "-rn", "sh", "-c", "ls ~/.ssh"], HOST));
+  // the real child runs inside the new namespace.
+  m.add(ev("ls", ["ls", "-la", "/home/u/.ssh"], SBX));
+  const v = m.verdicts();
+  check("launcher (unshare) is not a got-past finding",
+        !v.past.some((p) => p.fold.comm === "unshare"),
+        v.past.map((p) => p.fold.comm).join(","));
+  check("the child ls is blocked", v.blocked.some((p) => p.fold.comm === "ls"));
+  check("launcher excluded → nothing got past", v.past.length === 0);
+}
+
 // ── sandbox held: everything sensitive stayed inside ──────────────────────────
 {
   const m = createModel({ hostNetns: () => HOST });

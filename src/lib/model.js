@@ -130,7 +130,10 @@ export function createModel(opts = {}) {
     // boundary — the escape run ran `ls ~/.ssh` once sandboxed and once not —
     // so the verdict pass walks per-sample namespaces, not a single fold flag.
     if (typeof e.netns === "number" && e.netns) f.netnses.add(e.netns);
-    if (f.samples.length < 40) f.samples.push(e);
+    // Stamp wall-clock arrival. e.ts is the kernel's boot-relative ktime, so it
+    // cannot be compared to Date.now() for an age — the same trap the rate
+    // buckets hit. The verdict "age" column reads wallTs instead.
+    if (f.samples.length < 40) f.samples.push({ ...e, wallTs: Date.now() });
     // Bucket on WALL CLOCK, not e.ts. e.ts comes from the kernel's ktime and is
     // boot-relative, so (e.ts - t0) against a Date.now() epoch is a huge
     // negative number: every event landed in one bucket and the sparkline was
@@ -252,7 +255,16 @@ export function createModel(opts = {}) {
     return false;
   };
 
+  // A launcher carries the command it will run as its own argv tail: `bwrap …
+  // ls ~/.ssh`, `unshare -rn sh -c 'ls ~/.ssh'`, `sudo ls ~/.ssh`. Scanning its
+  // full argv would attribute the child's sensitivity to the launcher, which
+  // then reads as the sandbox-maker itself reaching credentials — the opposite
+  // of true. The child's own exec is what we judge, so a launcher contributes
+  // no verdict of its own.
+  const LAUNCHER = /^(unshare|bwrap|nsenter|sudo|doas|env|setsid|chroot|runuser|setpriv|timeout|stdbuf|nice|ionice|firejail)$/;
+
   const sensitiveReasons = (f) => {
+    if (LAUNCHER.test(f.comm)) return [];
     const full = f.samples.map((s) => s.argv.join(" ")).join(" \n");
     return SENSITIVE.filter((s) => s.test(full, f.comm)).map((s) => s.label);
   };
@@ -276,8 +288,8 @@ export function createModel(opts = {}) {
       let lastIn = 0;
       for (const s of f.samples) {
         if (!s.netns) continue;
-        if (s.netns === host) { outN++; lastOut = Math.max(lastOut, s.ts); }
-        else { inN++; lastIn = Math.max(lastIn, s.ts); }
+        if (s.netns === host) { outN++; lastOut = Math.max(lastOut, s.wallTs); }
+        else { inN++; lastIn = Math.max(lastIn, s.wallTs); }
       }
       if (outN) {
         past.push({
