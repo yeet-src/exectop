@@ -19,7 +19,7 @@
  */
 import { Box, Text, computed, mount, signal } from "yeet:tui";
 import {
-  buckets, dropped, flashes, folds, idle, outliers, paused, seedExisting, seedRoot, setPaused, stats, status, tick,
+  buckets, dropped, flashes, folds, idle, outliers, paused, sandboxDetected, seedExisting, seedRoot, setPaused, stats, status, tick, verdicts,
 } from "@/probes/exec.js";
 import { commOf, containerRoot, descendantsOf, listContainers, procTable } from "@/lib/scope.js";
 import { C_FAINT, C_DIM } from "@/lib/format.js";
@@ -28,6 +28,7 @@ import Verdict from "@/components/verdict.jsx";
 import Buckets from "@/components/buckets.jsx";
 import Outliers from "@/components/outliers.jsx";
 import Tree, { TreeHeader } from "@/components/tree.jsx";
+import Sandbox, { verdictList } from "@/components/sandbox.jsx";
 import Footer from "@/components/footer.jsx";
 
 // ── scope ────────────────────────────────────────────────────────────────────
@@ -90,14 +91,38 @@ async function resolveScope() {
 await resolveScope();
 
 // ── view state ───────────────────────────────────────────────────────────────
-const focus = signal("tree"); // "tree" | "outliers"
+// Two screens. "exec" is the original three-tier view; "sandbox" is the
+// got-past/blocked split. The sandbox screen becomes the default the first time
+// a sandbox is detected (a command ran in a different namespace from the agent),
+// and `s` toggles between them from then on. Until then there is nothing for the
+// sandbox screen to show, so we stay on exec and don't offer the toggle.
+const view = signal("exec"); // "exec" | "sandbox"
+const sandboxEverSeen = signal(false);
+let autoSwitched = false;
+
+const focus = signal("tree"); // "tree" | "outliers" | "sandbox"
 const treeSel = signal(0);
 const treeTop = signal(0);
 const outSel = signal(0);
+const sbxSel = signal(0);
 const expanded = signal(new Set());
 
 const treeFocused = computed(() => focus.get() === "tree");
 const outFocused = computed(() => focus.get() === "outliers");
+const sbxFocused = computed(() => focus.get() === "sandbox");
+
+// Flip to the sandbox view once, the first time a sandbox shows up — then leave
+// the choice to the user. Deferred out of the render path (set-during-render
+// throws); this runs on the exec stream's heartbeat.
+const watchForSandbox = () => {
+  if (autoSwitched) return;
+  if (sandboxDetected()) {
+    autoSwitched = true;
+    sandboxEverSeen.set(true);
+    view.set("sandbox");
+    focus.set("sandbox");
+  }
+};
 
 // Rows available to the tree. The tree sits in a height="1fr" Box, so the
 // layout already hands it the leftover space — this only has to agree with
@@ -132,7 +157,11 @@ const keepVisible = () => {
 };
 
 const move = (d) => {
-  if (focus.get() === "tree") {
+  const f = focus.get();
+  if (f === "sandbox") {
+    const n = verdictList(verdicts()).length;
+    sbxSel.set(Math.max(0, Math.min(Math.max(0, n - 1), sbxSel.get() + d)));
+  } else if (f === "tree") {
     const n = folds().length;
     treeSel.set(Math.max(0, Math.min(n - 1, treeSel.get() + d)));
     keepVisible();
@@ -140,6 +169,24 @@ const move = (d) => {
     const n = outliers().length;
     outSel.set(Math.max(0, Math.min(Math.max(0, n - 1), outSel.get() + d)));
   }
+};
+
+// Enter on a sandbox finding jumps to the exec view with that fold selected and
+// expanded — the same one-keystroke "finding → exact command" move the outlier
+// panel has, across the view boundary.
+const dropFromSandbox = () => {
+  const list = verdictList(verdicts());
+  const item = list[sbxSel.get()];
+  if (!item) return;
+  const i = folds().findIndex((f) => f.key === item.fold.key);
+  if (i < 0) return;
+  const next = new Set(expanded.get());
+  next.add(item.fold.key);
+  expanded.set(next);
+  view.set("exec");
+  focus.set("tree");
+  treeSel.set(i);
+  keepVisible();
 };
 
 const toggleExpand = () => {
@@ -173,14 +220,29 @@ const isEnter = (code) => code === "Enter" || code === "Return";
 // ── input ────────────────────────────────────────────────────────────────────
 tty.enableMouse();
 
+// Switch views, but only once there is a sandbox view worth showing.
+const toggleView = () => {
+  if (!sandboxEverSeen.get()) return;
+  if (view.get() === "sandbox") { view.set("exec"); focus.set("tree"); }
+  else { view.set("sandbox"); focus.set("sandbox"); }
+};
+
 tty.on("keydown", (e) => {
   const code = e.code;
   const k = (e.key ?? "").toLowerCase();
   if (code === "Escape" || k === "q") return yeet.exit();
-  if (code === "Tab") return focus.set(focus.get() === "tree" ? "outliers" : "tree");
+  if (k === "s") return toggleView();
+  if (code === "Tab") {
+    // Tab only cycles panes within the exec view; in the sandbox view it is the
+    // view toggle, so the one key always does the obvious thing on screen.
+    if (view.get() === "sandbox") return toggleView();
+    return focus.set(focus.get() === "tree" ? "outliers" : "tree");
+  }
   if (k === "p") return setPaused(!paused.get());
   if (isEnter(code) || k === " ") {
-    return focus.get() === "tree" ? toggleExpand() : dropIntoTree();
+    const f = focus.get();
+    if (f === "sandbox") return dropFromSandbox();
+    return f === "tree" ? toggleExpand() : dropIntoTree();
   }
   if (code === "ArrowDown" || k === "j") return move(1);
   if (code === "ArrowUp" || k === "k") return move(-1);
@@ -210,23 +272,38 @@ const Root = (size) => {
   const width = () => size.get().cols;
   return (
     <Box>
-      <TitleBar scope={scope} status={status} paused={paused} />
-      <Verdict tick={tick} stats={stats} buckets={buckets} outliers={outliers} idle={idle} dropped={dropped} width={width} />
-      <Rule label="doing" width={width} />
-      <Buckets tick={tick} stats={stats} buckets={buckets} width={width} maxRows={6} />
-      <Rule label="doesn't fit" width={width} focused={outFocused} />
-      <Outliers tick={tick} outliers={outliers} total={() => stats().total}
-                selected={outSel} focused={outFocused} width={width} maxRows={6} />
-      <Rule label="every exec, repetition folded" width={width} focused={treeFocused} />
-      <TreeHeader width={width} />
+      <TitleBar scope={scope} status={status} paused={paused} view={view} />
       <Box height="1fr" overflow="hidden">
-        <Tree tick={tick} folds={folds} flashes={flashes} selected={treeSel} expanded={expanded}
-              focused={treeFocused} top={treeTop} width={width} maxRows={() => treeBudgetFor(size.get().rows)} />
+        {() => (view.get() === "sandbox"
+          ? (
+            <Sandbox tick={tick} verdicts={verdicts} selected={sbxSel} focused={sbxFocused} width={width} />
+          )
+          : (
+            <Box>
+              <Verdict tick={tick} stats={stats} buckets={buckets} outliers={outliers} idle={idle} dropped={dropped} width={width} />
+              <Rule label="doing" width={width} />
+              <Buckets tick={tick} stats={stats} buckets={buckets} width={width} maxRows={6} />
+              <Rule label="doesn't fit" width={width} focused={outFocused} />
+              <Outliers tick={tick} outliers={outliers} total={() => stats().total}
+                        selected={outSel} focused={outFocused} width={width} maxRows={6} />
+              <Rule label="every exec, repetition folded" width={width} focused={treeFocused} />
+              <TreeHeader width={width} />
+              <Box height="1fr" overflow="hidden">
+                <Tree tick={tick} folds={folds} flashes={flashes} selected={treeSel} expanded={expanded}
+                      focused={treeFocused} top={treeTop} width={width} maxRows={() => treeBudgetFor(size.get().rows)} />
+              </Box>
+            </Box>
+          ))}
       </Box>
-      <Footer paused={paused} />
+      <Footer paused={paused} view={view} sandboxSeen={sandboxEverSeen} />
     </Box>
   );
 };
+
+// Heartbeat: notice the first sandboxed command and flip the view once. Reading
+// sandboxDetected() here (off the render path) is safe; doing it in a render
+// thunk and calling view.set() would trip the set-during-render guard.
+setInterval(watchForSandbox, 300);
 
 mount(Root);
 await new Promise(() => {}); // keep the script alive; the TUI owns the screen

@@ -8,17 +8,20 @@ const hint = (keys, label) => [
   <Text fg={C_DIM}>{` ${label}   `}</Text>,
 ];
 
-export default ({ paused }) => (
+export default ({ paused, view, sandboxSeen }) => (
   <Box height="1" direction="row" bg={C_RAIL}>
     <Text break="none">
-      {() => [
-        "  ",
-        ...hint("↑/↓", "move"),
-        ...hint("⏎", "expand"),
-        ...hint("tab", "pane"),
-        ...hint("p", paused.get() ? "resume" : "pause"),
-        ...hint("q", "quit"),
-      ]}
+      {() => {
+        const sbx = view?.get?.() === "sandbox";
+        const parts = ["  ", ...hint("↑/↓", "move")];
+        parts.push(...hint("⏎", sbx ? "show command" : "expand"));
+        if (!sbx) parts.push(...hint("tab", "pane"));
+        // Offer the view toggle only once there is a sandbox view to switch to.
+        if (sandboxSeen?.get?.()) parts.push(...hint("s", sbx ? "all execs" : "sandbox"));
+        parts.push(...hint("p", paused.get() ? "resume" : "pause"));
+        parts.push(...hint("q", "quit"));
+        return parts;
+      }}
     </Text>
   </Box>
 );
