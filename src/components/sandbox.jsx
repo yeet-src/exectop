@@ -13,18 +13,21 @@
 //
 // Wording is held to the credibility rule: the kernel tells us an exec ran in
 // the host namespace, not WHY (an approved retry, an excluded command, a
-// command you typed all look the same), so nothing here says "escaped". The
-// detail names what the command reaches, from its argv.
+// command you typed all look the same), so nothing here says "escaped". A
+// "got past" line is argv-inferred unless the file-open probe confirmed a real
+// read, which is tagged [verified]; the blocked side states only the namespace.
 import { Box, Text } from "yeet:tui";
 import {
-  C_BAD, C_DIM, C_FAINT, C_OK, C_SEL_BG, C_TEXT, C_TITLE, clip, fmtAge, pad,
+  C_BAD, C_DIM, C_FAINT, C_OK, C_SEL_BG, C_TEXT, clip, fmtAge, pad,
 } from "@/lib/format.js";
 
 const now = () => Date.now();
 const ageOf = (ts) => (ts ? fmtAge((now() - ts) / 1000) : "");
 
-// The headline. One line that is the verdict, plus a count on each side.
-const Headline = ({ tick, verdicts, width: W }) => (
+// The headline: the verdict, a count on each side, and — when the cursor is in
+// a finding — an N/total position so movement is visible (Necco's rule: a cursor
+// that can't be seen moving reads as broken).
+const Headline = ({ tick, verdicts, selected, focused, width: W }) => (
   <Text height="1" break="none">
     {() => {
       tick.get();
@@ -34,37 +37,48 @@ const Headline = ({ tick, verdicts, width: W }) => (
       }
       const past = v.past.length;
       const blocked = v.blocked.length;
+      const total = past + blocked;
       const runs = [<Text fg={C_DIM}>{"  "}</Text>];
-      if (past) {
-        runs.push(<Text bold fg={C_BAD}>{`✗ ${past} got past the sandbox`}</Text>);
-      } else {
-        runs.push(<Text bold fg={C_OK}>{"✓ the sandbox held"}</Text>);
-      }
+      runs.push(past
+        ? <Text bold fg={C_BAD}>{`✗ ${past} got past the sandbox`}</Text>
+        : <Text bold fg={C_OK}>{"✓ the sandbox held"}</Text>);
       runs.push(<Text fg={C_FAINT}>{"      "}</Text>);
       runs.push(<Text fg={blocked ? C_OK : C_DIM}>{`✓ ${blocked} blocked by the sandbox`}</Text>);
-      // Clear the rest of the line (yeet:tui has no erase-in-line).
+      // Right-aligned position counter, shown only while a finding is selected.
+      let tail = "";
+      if (focused.get() && total) tail = `${selected.get() + 1}/${total}`;
       const used = runs.reduce((n, r) => n + String(r?.props?.children ?? "").length, 0);
-      runs.push(<Text>{" ".repeat(Math.max(0, W() - used - 2))}</Text>);
+      const gap = Math.max(1, W() - used - tail.length - 2);
+      runs.push(<Text>{" ".repeat(gap)}</Text>);
+      if (tail) runs.push(<Text fg={C_FAINT}>{tail}</Text>);
       return runs;
     }}
   </Text>
 );
 
-// One finding row: a mark, the command, and the plain-language detail. `sel` is
-// the index into the flattened [past…, blocked…] list, so one cursor moves
-// across both panels and Enter can drop into the tree.
-// The detail is dimmed when it is an argv inference and brighter when the
-// file-open probe verified it (opened the real file / saw the stand-in), so the
-// eye can tell a kernel fact from an educated guess without extra chrome.
+// The column header for the finding rows, so the three columns read on their own.
+const ColHead = ({ width: W }) => (
+  <Text height="1" break="none" fg={C_FAINT}>
+    {() => "     " + pad("age", 5) + "  " + pad("command", Math.max(16, Math.floor(W() * 0.34))) + "  what happened"}
+  </Text>
+);
+
+// One finding row: cursor caret, mark, age, command, and the plain-language
+// detail. The caret + background together make the selection unmistakable; the
+// detail brightens and gets a [verified] tag when the file-open probe confirmed
+// a real read, so a kernel fact is visibly distinct from an argv inference.
 const Row = ({ item, mark, markColor, selected, W }) => {
   const labelW = Math.max(16, Math.floor(W * 0.34));
-  const detailW = Math.max(16, W - labelW - 14);
+  const tag = item.verified ? "  [verified]" : "";
+  const detailW = Math.max(16, W - labelW - 16 - tag.length);
   return (
     <Text height="1" break="none" bg={selected ? C_SEL_BG : undefined}>
-      <Text fg={markColor}>{"  " + mark + " "}</Text>
+      <Text bold fg={markColor}>{selected ? " ▸ " : "   "}</Text>
+      <Text fg={markColor}>{mark + " "}</Text>
       <Text fg={C_FAINT}>{pad(ageOf(item.ts), 5)}</Text>
       <Text bold fg={C_TEXT}>{"  " + pad(clip(item.fold.label, labelW), labelW)}</Text>
-      <Text fg={item.verified ? C_TEXT : C_DIM}>{pad("  " + clip(item.detail, detailW), detailW + 2)}</Text>
+      <Text fg={item.verified ? C_TEXT : C_DIM}>{"  " + clip(item.detail, detailW)}</Text>
+      {tag ? <Text bold fg={C_OK}>{tag}</Text> : null}
     </Text>
   );
 };
@@ -77,7 +91,11 @@ const SectionRule = ({ label, color, width: W }) => (
 
 export default ({ tick, verdicts, selected, focused, width: W }) => (
   <Box direction="column" overflow="hidden">
-    <Headline tick={tick} verdicts={verdicts} width={W} />
+    <Headline tick={tick} verdicts={verdicts} selected={selected} focused={focused} width={W} />
+    {/* One-line explainer so the two panel names are self-defining. */}
+    <Text height="1" break="none" fg={C_FAINT}>
+      {() => "  got past = ran in the agent's own namespace · blocked = ran inside the sandbox"}
+    </Text>
     <Box height="1" />
     {() => {
       tick.get();
@@ -97,6 +115,8 @@ export default ({ tick, verdicts, selected, focused, width: W }) => (
         );
         return out;
       }
+
+      out.push(<ColHead width={W} />);
 
       // Panel 1: got past.
       out.push(<SectionRule label="got past the sandbox" color={C_BAD} width={W} />);

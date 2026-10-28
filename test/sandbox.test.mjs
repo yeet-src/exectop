@@ -162,5 +162,28 @@ const open = (pid, comps, magic) => ({ pid, comps, magic, isDir: false, comm: "c
         ![...v.past, ...v.blocked].some((p) => /^sh -c mount/.test(p.fold.label)));
 }
 
+// ── a shell wrapper is folded away when its child command is itself shown ──────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  // sh -c 'cat ~/.ssh/key' and the cat it spawns — one action, two execs.
+  m.add(ev("sh", ["sh", "-c", "cat /home/u/.ssh/id_key"], SBX));
+  m.add(ev("cat", ["cat", "/home/u/.ssh/id_key"], SBX));
+  const v = m.verdicts();
+  check("shell wrapper folded away when child cat is shown",
+        v.blocked.some((p) => p.fold.comm === "cat") &&
+        !v.blocked.some((p) => /^sh -c cat/.test(p.fold.label)),
+        v.blocked.map((p) => p.fold.label).join(" | "));
+}
+// ── but a bare shell that is itself sensitive stays ───────────────────────────
+{
+  const m = createModel({ hostNetns: () => HOST });
+  // the shell reads the key directly in its own -c body, no child exec.
+  m.add(ev("sh", ["sh", "-c", "read k < /home/u/.ssh/id_key"], HOST));
+  const v = m.verdicts();
+  check("a shell with no matching child command is kept",
+        v.past.some((p) => /^sh -c/.test(p.fold.label)),
+        v.past.map((p) => p.fold.label).join(" | "));
+}
+
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);

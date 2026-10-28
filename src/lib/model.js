@@ -369,18 +369,33 @@ export function createModel(opts = {}) {
         // fails before the hook fires, so there is often no open at all. The
         // truth we DO have is the namespace: this command ran inside the sandbox,
         // where that credential path is walled off. We state exactly that and
-        // claim nothing about the open we cannot see. (inStandin/inReached are
-        // left computed but intentionally unused for wording.)
+        // claim nothing about the open we cannot see.
         blocked.push({
           fold: f, ts: lastIn, reach, verified: false,
           detail: `ran inside the sandbox · ${reach} walled off`,
         });
       }
     }
+    // Drop a shell-wrapper finding when the command it runs is itself a finding
+    // on the same side. `sh -c 'cat ~/.ssh/key'` and the `cat` it spawns are one
+    // action seen twice; the child carries the real comm and the open evidence,
+    // so it is the one to keep. We only fold away the wrapper, never a bare shell
+    // that is itself the sensitive thing.
+    const dedupeShells = (list) => {
+      const childCmds = new Set(
+        list.filter((v) => !/^(sh|bash|dash|zsh) -c /.test(v.fold.label)).map((v) => v.fold.comm),
+      );
+      return list.filter((v) => {
+        const m = /^(sh|bash|dash|zsh) -c (\S+)/.exec(v.fold.label);
+        if (!m) return true;                 // not a wrapper
+        return !childCmds.has(m[2]);         // keep only if its child isn't already shown
+      });
+    };
+
     // Most recent first: a live watcher cares about what just happened.
-    past.sort((a, b) => b.ts - a.ts);
-    blocked.sort((a, b) => b.ts - a.ts);
-    return { detected: sandboxDetected(), past, blocked };
+    const p = dedupeShells(past).sort((a, b) => b.ts - a.ts);
+    const b = dedupeShells(blocked).sort((a, b) => b.ts - a.ts);
+    return { detected: sandboxDetected(), past: p, blocked: b };
   };
 
   // Behavior buckets — the "what is this thing doing" layer, above the tree.
